@@ -520,6 +520,19 @@ app.get("/api/faltantes", (req, res) => {
   res.json({ ok: true, faltantes });
 });
 
+
+// ----- ENDPOINT TEMPORAL DE LIMPIEZA (ELIMINAR DESPUÉS DE USAR)
+app.post("/api/dangerous-wipe-all-data", (req, res) => {
+  try {
+    const emptyDB = [];
+    fs.writeFileSync(DB_FILE, JSON.stringify(emptyDB, null, 2), "utf8");
+    console.log("[CRITICAL] Database wiped for Mars by user request.");
+    res.json({ ok: true, message: "Sistema de Mars reiniciado a cero." });
+  } catch (e) {
+    res.status(500).json({ ok: false, message: e.message });
+  }
+});
+
 // ----- Start
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
