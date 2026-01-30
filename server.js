@@ -15,28 +15,31 @@ app.use(express.json({ limit: "2mb" }));
 const CARD_FEE_FACTOR = 0.0406; // 3.5% + 16% IVA (3.5 * 1.16 = 4.06%)
 
 // ----- Paths configuration (Render Persistent Disk Support)
+// ----- Paths configuration (Render Persistent Disk Support)
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 
-// Detectar Persistent Disk de Render
-const RENDER_DISK_PATH = "/var/data/cobranza";
-// Usamos el disco solo si existe físicamente
-const USE_PERSISTENT = fs.existsSync(RENDER_DISK_PATH);
+// Detectar configuración de entorno u optar por defecto local
+// REGLA DE ORO: process.env.DATA_DIR es la verdad absoluta si existe.
+const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(DATA_DIR, "uploads");
 
-// Exponer globalmente para que utils/persistence.js lo vea si es necesario, 
-// o simplemente lo pasamos. Pero como el requerimiento dice process.env.DATA_DIR:
-if (USE_PERSISTENT) {
-  console.log(`[System] Usando Persistent Disk en: ${RENDER_DISK_PATH}`);
-  process.env.DATA_DIR = path.join(RENDER_DISK_PATH, "data");
-  process.env.UPLOADS_DIR = path.join(RENDER_DISK_PATH, "uploads");
-} else {
-  console.log(`[System] Usando almacenamiento local (ephemeral/local)`);
-  process.env.DATA_DIR = path.join(ROOT, "data");
-  process.env.UPLOADS_DIR = path.join(ROOT, "uploads");
+console.log(`[System] DATA_DIR: ${DATA_DIR}`);
+console.log(`[System] UPLOADS_DIR: ${UPLOADS_DIR}`);
+
+// Asegurar existencia inmediata
+if (!fs.existsSync(DATA_DIR)) {
+  console.log(`[System] Creando DATA_DIR: ${DATA_DIR}`);
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(UPLOADS_DIR)) {
+  console.log(`[System] Creando UPLOADS_DIR: ${UPLOADS_DIR}`);
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
-const DATA_DIR = process.env.DATA_DIR;
-const UPLOADS_DIR = process.env.UPLOADS_DIR;
+// Re-injectar al env para consistencia en imports
+process.env.DATA_DIR = DATA_DIR;
+process.env.UPLOADS_DIR = UPLOADS_DIR;
 
 // Importar persistencia DESPUÉS de definir rutas
 const { saveData } = require("./utils/persistence");
@@ -62,54 +65,40 @@ for (const dir of [DATA_DIR, UPLOADS_DIR]) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// ----- Migration: Local -> Persistent (Startup Logic)
-// Verificar si existe el archivo antiguo en raíz o folder legacy y moverlo si destino está vacío
+// ----- Migration: Local/Legacy -> Persistent (Startup Logic)
 try {
-  const legacyDB = path.join(ROOT, "notas.json"); // Posible ubicación antigua
-  const legacyDataDB = path.join(ROOT, "data", "notas.json"); // Otra posible ubicación antigua
   const targetDB = path.join(DATA_DIR, DB_FILE);
 
-  // Función helper para migrar un archivo especifico
-  function secureMigration(source, dest, name) {
-    if (fs.existsSync(source) && !fs.existsSync(dest)) {
-      console.log(`[Migra] Migrando datos heredados (${name})...`);
-      // Copiar en vez de mover para seguridad (RESTRICCIÓN: No borrar hasta confirmar)
-      fs.copyFileSync(source, dest);
+  // Fuentes de migración en orden de prioridad
+  // 1. La carpeta antigua en persistent disk (si venimos de una versión anterior)
+  // 2. La carpeta data local
+  // 3. La raíz (legacy muy antiguo)
+  const legacySources = [
+    "/var/data/cobranza/data/notas.json",
+    path.join(ROOT, "data", "notas.json"),
+    path.join(ROOT, "notas.json")
+  ];
 
-      // Validar
-      if (fs.existsSync(dest) && fs.statSync(dest).size > 0) {
-        console.log(`[Migra] ${name} migrado exitosamente.`);
-        // Opcional: renombrar el viejo a .bak para evitar confusión futura, 
-        // pero por ahora lo dejamos como backup de emergencia
-      } else {
-        console.error(`[Migra] FALLO al migrar ${name}.`);
-      }
-    }
-  }
-
-  // Intentar migrar DB
   if (!fs.existsSync(targetDB)) {
-    if (fs.existsSync(legacyDataDB)) secureMigration(legacyDataDB, targetDB, "notas.json (from /data)");
-    else if (fs.existsSync(legacyDB)) secureMigration(legacyDB, targetDB, "notas.json (from root)");
-  }
+    console.log("[Migra] DATA_DIR vacío. Buscando datos para migrar...");
 
-  // Migrar uploads si estamos moviendo a disco persistente
-  if (USE_PERSISTENT) {
-    const localUploadsDir = path.join(ROOT, "uploads");
-    if (fs.existsSync(localUploadsDir)) {
-      const files = fs.readdirSync(localUploadsDir);
-      let count = 0;
-      for (const file of files) {
-        if (file.startsWith('.')) continue;
-        const src = path.join(localUploadsDir, file);
-        const dst = path.join(UPLOADS_DIR, file);
-        if (fs.statSync(src).isFile() && !fs.existsSync(dst)) {
-          fs.copyFileSync(src, dst);
-          count++;
+    for (const source of legacySources) {
+      if (fs.existsSync(source)) {
+        console.log(`[Migra] Encontrado origen válido en: ${source}`);
+        try {
+          fs.copyFileSync(source, targetDB);
+
+          if (fs.existsSync(targetDB) && fs.statSync(targetDB).size > 0) {
+            console.log(`[Migra] EXITO: Datos migrados a ${targetDB}`);
+            break; // Ya tenemos datos, dejamos de buscar
+          }
+        } catch (copyErr) {
+          console.error(`[Migra] Error copiando desde ${source}:`, copyErr);
         }
       }
-      if (count > 0) console.log(`[Migra] Se migraron ${count} archivos de uploads.`);
     }
+  } else {
+    console.log("[Migra] DATA_DIR ya tiene datos. Omitiendo migración.");
   }
 
 } catch (err) {
