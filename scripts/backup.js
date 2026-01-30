@@ -12,14 +12,25 @@ async function runBackup() {
     const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
     const R2_BUCKET = process.env.R2_BUCKET;
 
-    // Carpeta de datos a respaldar (la del disco persistente)
-    const DATA_DIR = "/var/data/cobranza";
-    // Si no existe el disco persistente, intentamos la local (desarrollo)
-    const SOURCE_DIR = fs.existsSync(DATA_DIR) ? DATA_DIR : path.join(__dirname, "..");
+    // Carpeta de datos a respaldar: Preferimos process.env.DATA_DIR si está seteado (por server.js)
+    // O fallback a la lógica de detección
+    const DISK_PATH = "/var/data/cobranza";
+    let SOURCE_DIR_DATA = process.env.DATA_DIR;
+    let SOURCE_DIR_UPLOADS = process.env.UPLOADS_DIR;
+
+    if (!SOURCE_DIR_DATA) {
+        // Fallback manual si se corre standalone sin las vars
+        if (fs.existsSync(DISK_PATH)) {
+            SOURCE_DIR_DATA = path.join(DISK_PATH, "data");
+            SOURCE_DIR_UPLOADS = path.join(DISK_PATH, "uploads");
+        } else {
+            SOURCE_DIR_DATA = path.join(__dirname, "../data");
+            SOURCE_DIR_UPLOADS = path.join(__dirname, "../uploads");
+        }
+    }
 
     if (!R2_ENDPOINT || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET) {
-        console.error("❌ Faltan variables de entorno para el backup (R2)");
-        process.exit(1);
+        throw new Error("Faltan variables de entorno para el backup (R2)");
     }
 
     const date = new Date().toISOString().split("T")[0];
@@ -28,17 +39,44 @@ async function runBackup() {
 
     try {
         console.log(`📦 Creando archivo comprimido: ${filename}...`);
-        // Comprimimos data y uploads si existen en el SOURCE_DIR
-        const targets = [];
-        if (fs.existsSync(path.join(SOURCE_DIR, "data"))) targets.push("data");
-        if (fs.existsSync(path.join(SOURCE_DIR, "uploads"))) targets.push("uploads");
 
-        if (targets.length === 0) {
-            console.log("⚠️ No hay carpetas 'data' o 'uploads' para respaldar.");
+        // Estrategia: tar de los contenidos, pero es tricky si están en rutas separadas.
+        // Simplificación: Vamos a hacer cd a la raiz común o añadirlos por ruta absoluta pero transformando nombres
+        // Mejor: copiamos lo que queremos backupear a una carpeta temp de staging? No, muy lento.
+        // Usamos rutas absolutas en tar.
+
+        const pathsToBackup = [];
+        if (fs.existsSync(SOURCE_DIR_DATA)) pathsToBackup.push(SOURCE_DIR_DATA);
+        if (fs.existsSync(SOURCE_DIR_UPLOADS)) pathsToBackup.push(SOURCE_DIR_UPLOADS);
+
+        if (pathsToBackup.length === 0) {
+            console.log("⚠️ No hay carpetas de datos válidas para respaldar.");
             return;
         }
 
-        execSync(`tar -czf ${archivePath} -C ${SOURCE_DIR} ${targets.join(" ")}`);
+        // Usamos -P para rutas absolutas o nos movemos? 
+        // Mejor: Nos aseguramos de guardar la estructura relativa si es posible, o simplemente guardar flat.
+        // Para consistencia con restauración, guardaremos con estructura de "data" y "uploads" 
+        // asumiendo que el restore las espera.
+        // TRUCO: tar -czf archivo.tar.gz -C /path/to/parent data -C /path/to/other/parent uploads
+
+        // Dado que DATA_DIR y UPLOADS_DIR suelen ser hermanos, podemos intentar eso. 
+        // Si no, lo hacemos simple: tar de los paths absolutos.
+
+        const cmdParts = [`tar -czf ${archivePath}`];
+
+        if (fs.existsSync(SOURCE_DIR_DATA)) {
+            const parent = path.dirname(SOURCE_DIR_DATA);
+            const base = path.basename(SOURCE_DIR_DATA);
+            cmdParts.push(`-C "${parent}" "${base}"`);
+        }
+        if (fs.existsSync(SOURCE_DIR_UPLOADS)) {
+            const parent = path.dirname(SOURCE_DIR_UPLOADS);
+            const base = path.basename(SOURCE_DIR_UPLOADS);
+            cmdParts.push(`-C "${parent}" "${base}"`);
+        }
+
+        execSync(cmdParts.join(" "));
 
         console.log(`🚀 Subiendo a Cloudflare R2...`);
         const s3 = new S3Client({
@@ -53,7 +91,7 @@ async function runBackup() {
         const fileBuffer = fs.readFileSync(archivePath);
         await s3.send(new PutObjectCommand({
             Bucket: R2_BUCKET,
-            Key: `${SYSTEM_NAME}/${filename}`, // Organizado por carpeta de sistema
+            Key: `mars/${filename}`, // ✅ Prefijo mars/ forzado como solicitado
             Body: fileBuffer,
             ContentType: "application/gzip",
         }));
