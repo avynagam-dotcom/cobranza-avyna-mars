@@ -601,6 +601,65 @@ app.get("/api/faltantes", (req, res) => {
 });
 
 
+// ----- Closing Control (Botón Paciente)
+const CLOSING_FILE = "closing.json";
+const CLOSING_DURATION_MS = 6 * 60 * 60 * 1000; // 6 horas
+
+function loadClosingState() {
+  try {
+    const filePath = path.join(DATA_DIR, CLOSING_FILE);
+    if (!fs.existsSync(filePath)) return { active: false, outputVisible: false, clickTimestamp: null };
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (e) {
+    return { active: false, outputVisible: false, clickTimestamp: null };
+  }
+}
+
+function saveClosingState(state) {
+  saveData(CLOSING_FILE, JSON.stringify(state, null, 2));
+}
+
+app.get("/api/closing/status", (req, res) => {
+  const state = loadClosingState();
+  const now = Date.now();
+
+  if (state.clickTimestamp) {
+    const elapsed = now - state.clickTimestamp;
+    if (elapsed > CLOSING_DURATION_MS) {
+      if (state.outputVisible) {
+        state.outputVisible = false; // Expired
+        saveClosingState(state);
+      }
+    }
+  }
+
+  // Logic: Show button if it's end of month OR if timer is active
+  // But the requirement says: "appears end of month... Click -> 6 hours -> hides"
+  // So:
+  // 1. If not clicked yet: Visible if End of Month (calculated by client, verified here optional)
+  // 2. If clicked: Visible if within 6h.
+
+  res.json({
+    ok: true,
+    active: state.outputVisible,
+    clickTimestamp: state.clickTimestamp,
+    remainingMs: state.clickTimestamp ? Math.max(0, (state.clickTimestamp + CLOSING_DURATION_MS) - now) : 0
+  });
+});
+
+app.post("/api/closing/start", (req, res) => {
+  const state = loadClosingState();
+  const now = Date.now();
+
+  if (!state.clickTimestamp) {
+    state.clickTimestamp = now;
+    state.outputVisible = true;
+    saveClosingState(state);
+  }
+
+  res.json({ ok: true, state });
+});
+
 // ----- Start
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {

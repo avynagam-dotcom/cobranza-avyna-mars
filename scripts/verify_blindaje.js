@@ -78,3 +78,21 @@ try {
 }
 
 console.log("\n---- VERIFICATION SUCCESSFUL ----");
+
+// 4. Test Backup Namespace configuration (Static Analysis)
+console.log("\n[Test 4] Verifying Mars Namespace in Backup Script...");
+const backupScriptPath = path.join(__dirname, 'backup.js');
+if (fs.existsSync(backupScriptPath)) {
+    const scriptContent = fs.readFileSync(backupScriptPath, 'utf8');
+    if (scriptContent.includes('Key: `mars/${filename}`') || scriptContent.includes('Key: "mars/${filename}"')) {
+        console.log("✅ Backup script is correctly configured for 'mars/' namespace.");
+    } else {
+        console.error("❌ Backup script DOES NOT contain 'mars/' namespace!");
+        // We warn but don't exit 1 strict, as strict string match might be fragile. But for this specific task it's good.
+        process.exit(1);
+    }
+} else {
+    console.error("❌ scripts/backup.js not found.");
+    process.exit(1);
+}
+

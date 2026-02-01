@@ -596,6 +596,9 @@
       }
     }
   </style>
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
 </head>
 
 <body>
@@ -835,6 +838,148 @@
       return "$" + rounded.toLocaleString("es-MX");
     }
 
+    // VIP Logic (Client based)
+    function getVipStatus(clientName, allNotas) {
+      if (!clientName) return false;
+      const clientNotas = allNotas.filter(n => 
+        (n.cliente || n.originalName || n.filename || "").toLowerCase() === clientName.toLowerCase()
+      );
+      
+      // 1. Check delays (historial)
+      const hasDelays = clientNotas.some(n => n.statusCredito === "VENCIDO");
+      if (hasDelays) return false;
+
+      // 2. Check volume (current month)
+      const now = new Date();
+      const currentMonth = now.getMonth();
+      const currentYear = now.getFullYear();
+      
+      const volume = clientNotas.reduce((sum, n) => {
+        const d = new Date(n.uploadedAt || n.batchKey); // Use upload date
+        if (d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+            return sum + (n.total || 0);
+        }
+        return sum;
+      }, 0);
+
+      return volume > 10000;
+    }
+
+    // Closing Control Logic
+    async function checkClosingStatus() {
+        try {
+            const r = await fetch("/api/closing/status");
+            const j = await r.json();
+            if (j.ok) {
+                const isEndOfMonth = daysToEndOfMonth() === 0;
+                
+                // Visible if Active (clicked & running) OR if End of Month (and not yet clicked/expired)
+                // Actually server says: active = outputVisible.
+                // If active, show button (maybe with timer).
+                // If not active, show button ONLY if end of month.
+                
+                if (j.active) {
+                    reportBtn.style.display = "inline-block";
+                    reportBtn.disabled = false;
+                    const mins = Math.ceil(j.remainingMs / 60000);
+                    reportBtn.textContent = `Reporte activo (${mins}m)`;
+                    reportBtn.onclick = generatePDF; // Direct gen if active
+                    return;
+                }
+                
+                if (isEndOfMonth) {
+                    reportBtn.style.display = "inline-block";
+                    reportBtn.disabled = false;
+                    reportBtn.textContent = "Reporte Mensual (Cierre)";
+                    reportBtn.onclick = async () => {
+                        // Activate 
+                        await fetch("/api/closing/start", { method: "POST" });
+                        generatePDF();
+                        checkClosingStatus(); // Refresh UI
+                    };
+                } else {
+                     // Not end of month, not active
+                     reportBtn.style.display = "inline-block"; // Keep layout
+                     reportBtn.disabled = true;
+                     const rem = daysToEndOfMonth();
+                     reportBtn.textContent = `Cierre en ${rem} días`;
+                }
+            }
+        } catch(e) { console.error("Closing status check failed", e); }
+    }
+
+    async function generatePDF() {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        
+        // Logo (simulated or loaded)
+        // doc.addImage("/apple-touch-icon.png", "PNG", 14, 10, 20, 20); // Async load issue likely, skip for now or use simple text
+        doc.setFontSize(22);
+        doc.setTextColor(240, 200, 91); // Gold
+        doc.text("Avyna - Reporte Mensual Mars", 14, 22);
+        
+        doc.setFontSize(11);
+        doc.setTextColor(100);
+        const now = new Date().toLocaleDateString("es-MX", { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        doc.text(`Generado: ${now}`, 14, 30);
+        
+        // KPIs Summary
+        const kpiP = kpiPct.textContent;
+        const kpiC = kpiCobrado.textContent;
+        const kpiS = kpiPorCobrar.textContent;
+        const kpiU = kpiUtilCobrada.textContent;
+        
+        doc.setFontSize(14);
+        doc.setTextColor(0);
+        doc.text("Resumen Ejecutivo", 14, 45);
+        
+        const summary = [
+            ["Cobranza Global", kpiP],
+            ["Total Cobrado", kpiC],
+            ["Por Cobrar", kpiS],
+            ["Utilidad Recaudada", kpiU]
+        ];
+        
+        doc.autoTable({
+            startY: 50,
+            head: [['Indicador', 'Valor']],
+            body: summary,
+            theme: 'striped',
+            headStyles: { fillColor: [7, 16, 39] }
+        });
+        
+        // Detailed Table
+        doc.text("Detalle de Batch Actual", 14, doc.lastAutoTable.finalY + 15);
+        
+        const rows = window.__allNotas
+            .filter(n => String(n.batchKey || "") === String(window.__batchKey || ""))
+            .map(n => [
+                n.cliente || "Sin nombre",
+                money(n.total),
+                money(n.pagado),
+                money(n.saldo),
+                n.statusCredito
+            ]);
+            
+        doc.autoTable({
+            startY: doc.lastAutoTable.finalY + 20,
+            head: [['Cliente', 'Total', 'Pagado', 'Saldo', 'Estado']],
+            body: rows,
+            styles: { fontSize: 8 },
+            headStyles: { fillColor: [41, 128, 185] }
+        });
+        
+        // Socios Estratégicos (Example Section)
+        doc.addPage();
+        doc.setFontSize(16);
+        doc.text("Socios Estratégicos", 14, 20);
+        doc.setFontSize(10);
+        doc.text("Este reporte incluye métricas de alto nivel para socios clave.", 14, 30);
+        // ... (Content placeholder)
+        
+        doc.save("Reporte_Avyna_Mars.pdf");
+    }
+
     function escapeHtml(s) {
       return String(s || "").replace(/[&<>"']/g, m => ({
         "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -877,7 +1022,13 @@
       }
 
       tbody.innerHTML = list.map(n => {
-        const client = escapeHtml(n.cliente || n.originalName || n.filename || "—");
+        let client = escapeHtml(n.cliente || n.originalName || n.filename || "—");
+        
+        // Check VIP
+        if (getVipStatus(n.cliente, window.__allNotas)) {
+            client = "⭐ " + client;
+        }
+
         const total = money(n.total);
         const pagado = money(n.pagado || 0);
         const saldo = money(n.saldo);
@@ -1064,7 +1215,10 @@
 
         applyFilter();
         await refreshKPIs();
-        updateReportButton();
+        applyFilter();
+        await refreshKPIs();
+        // updateReportButton(); // Replaced by checkClosingStatus
+        await checkClosingStatus();
         updateBackBatchButton();
       } catch (e) {
         // si falla fetch, no rompas UI
@@ -1266,11 +1420,13 @@
       fileInput.value = "";
     });
 
-    // Report button (solo UI por ahora)
+    // Report button logic handles its own events now via checkClosingStatus replacement
+    /*
     reportBtn.addEventListener("click", () => {
       if (reportBtn.disabled) return;
       setMsg("ok", "Reporte mensual: listo para generar (fin de mes).");
     });
+    */
 
     // REFRESH “REAL” EN iPHONE:
     // - al volver a la app (focus/visibility)
@@ -1289,7 +1445,8 @@
     }, 15000);
 
     // Init
-    updateReportButton();
+    // updateReportButton(); // Replaced by checkClosingStatus
+    checkClosingStatus();
     refreshList();
   </script>
 </body>
