@@ -352,6 +352,33 @@
       background: var(--red)
     }
 
+    /* Cuadrito vencidos */
+    .vencidoBox {
+      display: none;
+      align-items: center;
+      gap: 14px;
+      margin: 10px 0 6px 0;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 90, 90, 0.35);
+      background: rgba(255, 90, 90, 0.08);
+    }
+    .vencidoBox.show { display: flex; }
+    .vbLabel {
+      font-size: 12px;
+      font-weight: 900;
+      color: var(--red);
+      text-transform: uppercase;
+      letter-spacing: .4px;
+    }
+    .vbAmt {
+      font-size: 22px;
+      font-weight: 950;
+      color: var(--red);
+      letter-spacing: -0.5px;
+    }
+    .vbSub { font-size: 12px; color: rgba(233,238,252,.60); }
+
     .tableWrap {
       width: 100%;
       overflow-x: auto;
@@ -684,6 +711,15 @@
       </div>
     </div>
 
+    <!-- Cuadrito vencidos (solo en modo pendientes) -->
+    <div id="vencidoBox" class="vencidoBox">
+      <div>
+        <div class="vbLabel">Recuperable de vencidos</div>
+        <div class="vbAmt" id="vbAmt">—</div>
+        <div class="vbSub" id="vbSub"></div>
+      </div>
+    </div>
+
     <div class="tableWrap">
       <table>
         <thead>
@@ -798,6 +834,11 @@
     const whoBtn = document.getElementById("whoBtn");
     const backBatchBtn = document.getElementById("backBatchBtn");
     const reportBtn = document.getElementById("reportBtn");
+
+    // Vencidos box
+    const vencidoBox = document.getElementById("vencidoBox");
+    const vbAmt = document.getElementById("vbAmt");
+    const vbSub = document.getElementById("vbSub");
 
     // Modal Pago
     const savePay = document.getElementById("savePay");
@@ -995,17 +1036,6 @@
       return Math.max(0, Math.round(diffMs / (24 * 60 * 60 * 1000)));
     }
 
-    function updateReportButton() {
-      const remaining = daysToEndOfMonth(new Date());
-      if (remaining === 0) {
-        reportBtn.disabled = false;
-        reportBtn.textContent = "Reporte mensual";
-      } else {
-        reportBtn.disabled = true;
-        reportBtn.textContent = `Reporte en ${remaining} día${remaining === 1 ? "" : "s"}`;
-      }
-    }
-
     function statusLabel(n) {
       const s = (n.statusCredito || "").toUpperCase();
       if (s === "LIQUIDADO") return { text: "Liquidado", dot: "sGreen", clickable: false };
@@ -1090,7 +1120,7 @@
       const current = all.filter(n => String(n.batchKey || "") === batchKey);
 
       if (window.__viewMode === "pendientes") {
-        modeHint.textContent = "Mostrando PENDIENTES (global) ordenados por saldo (para iniciar llamadas).";
+        modeHint.textContent = "Mostrando PENDIENTES — vencidos primero, luego por saldo.";
       } else {
         modeHint.textContent = q
           ? "Mostrando HISTÓRICO (buscador)."
@@ -1100,10 +1130,22 @@
       updateBackBatchButton();
 
       if (window.__viewMode === "pendientes") {
+        const statusRank = s => {
+          const u = (s || "").toUpperCase();
+          if (u === "VENCIDO") return 0;
+          if (u === "POR_VENCER") return 1;
+          if (u === "EN_PLAZO") return 2;
+          return 3;
+        };
         let pendientes = all
           .filter(n => !!n.deliveredAt)
           .filter(n => typeof n.saldo === "number" && n.saldo > 0)
-          .sort((a, b) => (b.saldo || 0) - (a.saldo || 0));
+          .sort((a, b) => {
+            const ra = statusRank(a.statusCredito);
+            const rb = statusRank(b.statusCredito);
+            if (ra !== rb) return ra - rb;
+            return (b.saldo || 0) - (a.saldo || 0);
+          });
 
         if (q) {
           pendientes = pendientes.filter(n => {
@@ -1114,9 +1156,22 @@
           });
         }
 
+        // Cuadrito vencidos
+        const vencidos = pendientes.filter(n => (n.statusCredito || "").toUpperCase() === "VENCIDO");
+        const totalVencido = vencidos.reduce((acc, n) => acc + (n.saldo || 0), 0);
+        if (vencidos.length > 0) {
+          vbAmt.textContent = money(totalVencido);
+          vbSub.textContent = `${vencidos.length} cliente${vencidos.length === 1 ? "" : "s"} vencido${vencidos.length === 1 ? "" : "s"}`;
+          vencidoBox.classList.add("show");
+        } else {
+          vencidoBox.classList.remove("show");
+        }
+
         render(pendientes);
         return;
       }
+
+      vencidoBox.classList.remove("show");
 
       if (!q) {
         render(current);
@@ -1215,9 +1270,6 @@
 
         applyFilter();
         await refreshKPIs();
-        applyFilter();
-        await refreshKPIs();
-        // updateReportButton(); // Replaced by checkClosingStatus
         await checkClosingStatus();
         updateBackBatchButton();
       } catch (e) {

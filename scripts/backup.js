@@ -1,72 +1,107 @@
 "use strict";
 
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
-const { execSync } = require("child_process");
+const { spawnSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+try {
+    require('dotenv').config();
+} catch (e) {
+    // Dotenv optional for Dry Run / CI
+}
+
+// Helper para asegurar logs visibles
+const log = (msg) => console.log(msg);
+const logError = (msg, err) => {
+    console.error(msg);
+    if (err) console.error(err);
+};
 
 async function runBackup() {
-    console.log("[Backup] 🛡️ Iniciando protocolo de blindaje de datos...");
-
-    const SYSTEM_NAME = process.env.SYSTEM_NAME || "avyna-mars";
-    const R2_ENDPOINT = process.env.R2_ENDPOINT;
-    const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
-    const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
-    const R2_BUCKET = process.env.R2_BUCKET;
-
-    // LA VERDAD ABSOLUTA O NADA
-    // En el ecosistema blindado, server.js define DATA_DIR y UPLOADS_DIR en el environment.
-    const DATA_DIR = process.env.DATA_DIR;
-    const UPLOADS_DIR = process.env.UPLOADS_DIR;
-
-    if (!DATA_DIR) {
-        console.error("❌ [Backup] ABORT: process.env.DATA_DIR no definido. El blindaje requiere rutas explícitas.");
-        return;
-    }
-
-    if (!R2_ENDPOINT || !R2_ACCESS_KEY_ID || !R2_BUCKET) {
-        console.error("❌ [Backup] ABORT: Credenciales R2 incompletas.");
-        return;
-    }
-
-    const date = new Date().toISOString().split("T")[0];
-    const filename = `backup-${SYSTEM_NAME}-${date}.tar.gz`;
-    const tempFilePath = path.join("/tmp", filename);
+    log("🔵 [Backup] Iniciando respaldo...");
 
     try {
-        // 1. Validar existencia
-        if (!fs.existsSync(DATA_DIR)) {
-            console.warn(`[Backup] ⚠️ DATA_DIR no existe física: ${DATA_DIR}. Nada que respaldar.`);
+        const SYSTEM_NAME = process.env.SYSTEM_NAME || "avyna-desconocido";
+        const R2_ENDPOINT = process.env.R2_ENDPOINT;
+        const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
+        const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
+        const R2_BUCKET = process.env.R2_BUCKET;
+
+        // Validate Env (Skip if Dry Run)
+        if (!R2_ENDPOINT || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_BUCKET) {
+            if (process.env.DRY_RUN) {
+                console.log("⚠️ [Dry Run] Detected missing R2 credentials. Proceeding with packaging ONLY.");
+            } else {
+                throw new Error("❌ FALTAN VARIABLES DE ENTORNO (R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET)");
+            }
+        }
+
+        // FIX: Usar la variable exacta que ya está en Render
+        const DATA_PATH = process.env.DATA_DIR || path.join(__dirname, '../data');
+
+        console.log(`📂 [Backup Config] Buscando datos en: ${DATA_PATH}`);
+
+        // Validación de seguridad para logs
+        if (process.env.DATA_DIR) {
+            console.log('✅ Modo Persistente Detectado (Render Disk)');
+        } else {
+            console.log('⚠️ Modo Local Detectado (Sin persistencia explicita)');
+        }
+
+        const SOURCE_ROOT = path.dirname(DATA_PATH);
+        const DATA_SUBDIR = path.basename(DATA_PATH);
+
+        // El usuario pidió explícitamente ver esta ruta
+        const targetDataPath = DATA_PATH;
+        log(`🔎 [Backup] Buscando archivos en ${targetDataPath}...`);
+
+        if (!fs.existsSync(targetDataPath)) {
+            console.log(`⚠️ [Backup] La carpeta ${targetDataPath} no existe. Creándola...`);
+            fs.mkdirSync(targetDataPath, { recursive: true });
+        }
+
+        const date = new Date().toISOString().split("T")[0];
+        const filename = `backup-${SYSTEM_NAME}-${date}.tar.gz`;
+        const archivePath = path.join("/tmp", filename);
+
+        // Validar integridad de archivos clave antes de empaquetar
+        const hasNotes = fs.existsSync(path.join(targetDataPath, "notas.json"));
+        const hasAudit = fs.existsSync(path.join(targetDataPath, "audit.jsonl"));
+        log(`📝 [Backup] Integridad: notas.json [${hasNotes ? 'OK' : 'MISSING'}], audit.jsonl [${hasAudit ? 'OK' : 'MISSING'}]`);
+
+        // Comprimimos 'data' y 'uploads' (si existe uploads)
+        const targets = [DATA_SUBDIR];
+        if (fs.existsSync(path.join(SOURCE_ROOT, "uploads"))) {
+            targets.push("uploads");
+            log(`📦 [Backup] Se incluirá carpeta 'uploads' (Evidencias)`);
+        }
+
+        log(`📦 [Backup] Generando archivo comprimido en ${archivePath}...`);
+        const tarResult = spawnSync('tar', ['-czf', archivePath, '-C', SOURCE_ROOT, ...targets], {
+            stdio: ['ignore', 'pipe', 'pipe']
+        });
+        if (tarResult.status !== 0) {
+            const errMsg = tarResult.stderr ? tarResult.stderr.toString().trim() : 'tar command failed';
+            throw new Error(`tar failed (status ${tarResult.status}): ${errMsg}`);
+        }
+
+        const stats = fs.statSync(archivePath);
+        const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
+        log(`📦 [Backup] Archivo creado: ${sizeMB} MB (${stats.size} bytes)`);
+
+        if (stats.size === 0) {
+            throw new Error("❌ El archivo de respaldo se creó vacío (0 bytes). Abortando subida.");
+        }
+
+        // DRY RUN EXIT
+        if (process.env.DRY_RUN) {
+            console.log(`✅ [Dry Run] Simulation Complete. Archive ready at: ${archivePath}`);
+            console.log(`🔒 [Dry Run] WOULD UPLOAD TO: ${R2_BUCKET}/${(process.env.SYSTEM_NAME || "sistema").toLowerCase()}/${filename}`);
             return;
         }
 
-        console.log(`[Backup] 📦 Comprimiendo origen: ${DATA_DIR}...`);
+        log(`🚀 [Backup] Subiendo a Cloudflare R2 (${R2_BUCKET})...`);
 
-        // 2. Compresión Inteligente
-        // Usamos path relativo (-C) para no guardar rutas absolutas extrañas en el tar
-        const parentDir = path.dirname(DATA_DIR);
-        const folderName = path.basename(DATA_DIR);
-
-        // Incluimos uploads si está dentro o hermano, pero para simplificar el blindaje:
-        // Respaldamos TODO el DATA_DIR, que debería contener 'uploads' si es la estructura estándar.
-        // Si uploads es externo, lo añadimos.
-
-        let cmd = `tar -czf "${tempFilePath}" -C "${parentDir}" "${folderName}"`;
-
-        // Si UPLOADS_DIR existe y NO está dentro de DATA_DIR, lo agregamos
-        if (UPLOADS_DIR && fs.existsSync(UPLOADS_DIR) && !UPLOADS_DIR.startsWith(DATA_DIR)) {
-            const upParent = path.dirname(UPLOADS_DIR);
-            const upName = path.basename(UPLOADS_DIR);
-            console.log(`[Backup] ➕ Incluyendo adjuntos externos: ${UPLOADS_DIR}`);
-            cmd += ` -C "${upParent}" "${upName}"`;
-        }
-
-        execSync(cmd);
-        const size = fs.statSync(tempFilePath).size;
-        console.log(`[Backup] 📦 Archivo generado: ${filename} (${(size / 1024 / 1024).toFixed(2)} MB)`);
-
-        // 3. Upload R2
-        console.log(`[Backup] 🚀 Subiendo a R2 (${R2_BUCKET})...`);
         const s3 = new S3Client({
             region: "auto",
             endpoint: R2_ENDPOINT,
@@ -76,27 +111,31 @@ async function runBackup() {
             },
         });
 
-        const fileBuffer = fs.readFileSync(tempFilePath);
+        const fileBuffer = fs.readFileSync(archivePath);
+        const namespace = (process.env.SYSTEM_NAME || "sistema").toLowerCase();
+
         await s3.send(new PutObjectCommand({
             Bucket: R2_BUCKET,
-            Key: `mars/${filename}`, // Namespace reforzado
+            Key: `${namespace}/${filename}`,
             Body: fileBuffer,
             ContentType: "application/gzip",
         }));
 
-        console.log(`[Backup] ✅ BLINDAJE COMPLETADO: ${filename}`);
+        log(`✅ [Backup] ¡Respaldo exitoso en Cloudflare! (${namespace}/${filename})`);
 
-        // 4. Cleanup
-        fs.unlinkSync(tempFilePath);
+        // Return ETag info if possible (S3Client doesn't easily return it in PutObject output without more config, but we can assume success)
+
+        // Limpieza
+        fs.unlinkSync(archivePath);
 
     } catch (error) {
-        console.error("❌ [Backup] FALLO CRÍTICO:", error);
-        // No throw para no tumbar el proceso si es un cron, pero logueamos fuerte.
+        logError("🚨 ERROR CRÍTICO: BACKUP FALLIDO", error);
+        throw error;
     }
 }
 
-module.exports = runBackup;
-
+// Si se ejecuta directo con 'node backup.js', corre la función
 if (require.main === module) {
-    runBackup().catch(console.error);
+    runBackup();
 }
+module.exports = { runBackup };

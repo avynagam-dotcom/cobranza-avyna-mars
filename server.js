@@ -12,9 +12,22 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
-const CARD_FEE_FACTOR = 0.0406; // 3.5% + 16% IVA (3.5 * 1.16 = 4.06%)
+// C1: Auth HTTP Basic opt-in (activa solo si ADMIN_USER + ADMIN_PASS están seteadas)
+const ADMIN_USER = process.env.ADMIN_USER;
+const ADMIN_PASS = process.env.ADMIN_PASS;
+if (ADMIN_USER && ADMIN_PASS) {
+  const expectedToken = Buffer.from(`${ADMIN_USER}:${ADMIN_PASS}`).toString('base64');
+  app.use((req, res, next) => {
+    const auth = req.headers.authorization || '';
+    if (auth.startsWith('Basic ') && auth.slice(6) === expectedToken) return next();
+    res.set('WWW-Authenticate', 'Basic realm="Avyna Cobranza Mars"');
+    return res.status(401).send('Acceso restringido');
+  });
+}
 
-// ----- Paths configuration (Render Persistent Disk Support)
+const CARD_FEE_FACTOR = 0.0406; // 3.5% + 16% IVA (3.5 * 1.16 = 4.06%)
+const MARGIN = parseFloat(process.env.MARGIN_PCT || '0.4');
+
 // ----- Paths configuration (Render Persistent Disk Support)
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -50,7 +63,7 @@ const DB_FILE = "notas.json"; // persistence.js ya usa DATA_DIR
 const { initScheduler } = require("./utils/scheduler");
 
 // Inicializar el Scheduler (Backup Blindado)
-initScheduler();
+initScheduler({ dataDir: DATA_DIR, uploadsDir: UPLOADS_DIR });
 
 // Ensure folders exist (Critical for new locations)
 for (const dir of [DATA_DIR, UPLOADS_DIR]) {
@@ -105,7 +118,12 @@ function loadDB() {
     if (!fs.existsSync(filePath)) return [];
     const raw = fs.readFileSync(filePath, "utf8");
     const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) return [];
+    return data.map(n => ({
+      ...n,
+      total: (typeof n.total === 'number' && Number.isFinite(n.total)) ? n.total : null,
+      pagado: (typeof n.pagado === 'number' && Number.isFinite(n.pagado)) ? n.pagado : 0,
+    }));
   } catch (e) {
     console.error("[DB] Error loading DB:", e.message);
     return [];
@@ -295,6 +313,18 @@ function computeCredito(nota, now = new Date()) {
   };
 }
 
+// I5: Rate limiting en uploads (sin dependencias externas)
+const _uploadAttempts = new Map();
+function _checkUploadRate(ip) {
+  const now = Date.now();
+  const windowMs = 60_000;
+  const limit = 20;
+  const prev = (_uploadAttempts.get(ip) || []).filter(t => now - t < windowMs);
+  if (prev.length >= limit) return false;
+  _uploadAttempts.set(ip, [...prev, now]);
+  return true;
+}
+
 // ----- Multer (PDF upload)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -315,6 +345,10 @@ app.get("/api/notas", (req, res) => {
 
 // ----- API: subir PDF
 app.post("/api/upload", upload.single("pdf"), async (req, res) => {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!_checkUploadRate(ip)) {
+    return res.status(429).json({ ok: false, message: "Demasiados intentos. Espera un momento." });
+  }
   try {
     const batchKey = getCurrentBatchKey();
 
@@ -559,10 +593,10 @@ app.get("/api/kpis", (req, res) => {
   const totalSaldo = Math.max(totalCobrable - totalCobrado, 0);
   const pctCobranza = totalCobrable > 0 ? totalCobrado / totalCobrable : 0;
 
-  // Utilidad NETA (restando comisiones bancarias del 40% de utilidad bruta)
-  const utilidadCobradaBruta = totalCobrado * 0.4;
+  // Utilidad NETA (restando comisiones bancarias del margen de utilidad bruta)
+  const utilidadCobradaBruta = totalCobrado * MARGIN;
   const utilidadCobrada = Math.max(utilidadCobradaBruta - totalComisiones, 0);
-  const utilidadPorCobrar = totalSaldo * 0.4;
+  const utilidadPorCobrar = totalSaldo * MARGIN;
 
   res.json({
     ok: true,
