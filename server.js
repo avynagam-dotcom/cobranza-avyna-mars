@@ -285,7 +285,11 @@ function computeCredito(nota, now = new Date()) {
   const pagado = typeof nota.pagado === "number" && Number.isFinite(nota.pagado) ? nota.pagado : 0;
 
   let saldo = null;
-  if (total != null) saldo = Math.max(total - pagado, 0);
+  let saldoFavor = 0;
+  if (total != null) {
+    saldo = Math.max(total - pagado, 0);
+    saldoFavor = Math.max(pagado - total, 0);
+  }
 
   let statusCredito = "PRE_ENTREGA";
 
@@ -309,6 +313,7 @@ function computeCredito(nota, now = new Date()) {
     deliveredAt: nota.deliveredAt || null,
     dueAt: nota.dueAt || null,
     saldo,
+    saldoFavor,
     statusCredito,
   };
 }
@@ -477,7 +482,8 @@ app.post("/api/pago", (req, res) => {
     const val = Number(monto);
     const mtd = metodo || "efectivo"; // por defecto efectivo
 
-    if (!id || !Number.isFinite(val) || val <= 0) {
+    // Permitimos negativos (ajustes / reversos por duplicado), pero no 0.
+    if (!id || !Number.isFinite(val) || val === 0) {
       return res.status(400).json({ ok: false, message: "Datos inválidos" });
     }
 
@@ -515,6 +521,14 @@ app.post("/api/pago", (req, res) => {
 
     n.pagos.push(nuevoPago);
     n.pagado = Number((n.pagado || 0) + val);
+
+    // Guard: el pagado acumulado no puede quedar en negativo.
+    // (Saldo a favor sí está permitido — cuando pagado > total.)
+    if (n.pagado < 0) {
+      n.pagos.pop();
+      n.pagado = Number(n.pagado - val);
+      return res.status(400).json({ ok: false, message: "El ajuste dejaría el pagado en negativo. Reduce el monto del ajuste." });
+    }
 
     if (n.deliveredAt && !n.firstPaymentAt) {
       n.firstPaymentAt = nuevoPago.fecha;

@@ -1061,7 +1061,10 @@
 
         const total = money(n.total);
         const pagado = money(n.pagado || 0);
-        const saldo = money(n.saldo);
+        const saldoFavor = Number(n.saldoFavor) || 0;
+        const saldoCell = saldoFavor > 0
+          ? `<div style="color:#57d47a; font-weight:800">+${money(saldoFavor)}</div><div style="font-size:10px; color:#57d47a; opacity:0.9; margin-top:2px">Saldo a favor</div>`
+          : money(n.saldo);
 
         const st = statusLabel(n);
         const due = n.dueAt ? new Date(n.dueAt).toLocaleDateString("es-MX") : null;
@@ -1081,7 +1084,7 @@
             <td style="font-weight:900">${client}</td>
             <td class="right">${total}</td>
             <td class="right">${pagado}</td>
-            <td class="right">${saldo}</td>
+            <td class="right">${saldoCell}</td>
             <td>${statusHtml}</td>
             <td class="right">
               <div style="display:flex;gap:6px;justify-content:flex-end">
@@ -1253,6 +1256,7 @@
           total: (n.total ?? null),
           pagado: (n.pagado ?? 0),
           saldo: (n.saldo ?? null),
+          saldoFavor: (n.saldoFavor ?? 0),
           deliveredAt: n.deliveredAt || null,
           dueAt: n.dueAt || null,
           statusCredito: n.statusCredito || null,
@@ -1328,13 +1332,24 @@
     savePay.addEventListener("click", async () => {
       const raw = (payAmount.value || "").trim().replace(/,/g, "");
       const val = Number(raw);
-      if (!Number.isFinite(val) || val <= 0) return;
+      // Permitimos negativos (ajustes / reversos). Solo bloqueamos 0 o no-número.
+      if (!Number.isFinite(val) || val === 0) return;
 
-      await fetch("/api/pago", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: payingId, monto: val, metodo: selectedMethod })
-      });
+      try {
+        const r = await fetch("/api/pago", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: payingId, monto: val, metodo: selectedMethod })
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j.ok) {
+          alert(j.message || "No se pudo registrar el pago");
+          return;
+        }
+      } catch (e) {
+        alert("Error de conexión. Revisa tu señal e intenta de nuevo.");
+        return;
+      }
 
       closePay();
       await refreshList();
