@@ -127,6 +127,9 @@ function loadDB() {
       ...n,
       total: (typeof n.total === 'number' && Number.isFinite(n.total)) ? n.total : null,
       pagado: (typeof n.pagado === 'number' && Number.isFinite(n.pagado)) ? n.pagado : 0,
+      // Notas subidas antes de esta feature no tienen 'tipo' — deben seguir
+      // contando como pedido normal, nunca desaparecer de KPIs/tablero.
+      tipo: n.tipo || "pedido",
     }));
   } catch (e) {
     console.error("[DB] Error loading DB:", e.message);
