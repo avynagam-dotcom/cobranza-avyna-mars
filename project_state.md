@@ -3,11 +3,11 @@
 
 ---
 
-## Sesión 2026-07-10 — Clasificación de notas, soft-delete, alertas, y fix crítico de upload
+## Sesión 2026-07-10 — Clasificación de notas, soft-delete, y fix crítico de upload
 
-Réplica exacta del patch aplicado en `cobranza-avyna-backend` (clasificación bonif/repo, soft-delete auditado, alerta email, liquidación diferida, KPIs de gasto — respetando la lógica de comisión de tarjeta 4.06% ya existente en Mars). 26/26 tests en verde. Además reemplazado `pdf-parse` (roto en Node 22, ver detalle en `project_state.md` de backend) por `pdfjs-dist@6.1.200` vía `extractTextFromPdf.js` — verificado con upload real por `curl`.
+Réplica exacta del patch aplicado en `cobranza-avyna-backend` (clasificación bonif/repo, soft-delete auditado, liquidación diferida, KPIs de gasto — respetando la lógica de comisión de tarjeta 4.06% ya existente en Mars). 22/22 tests en verde. Además reemplazado `pdf-parse` (roto en Node 22, ver detalle en `project_state.md` de backend) por `pdfjs-dist@6.1.200` vía `extractTextFromPdf.js` — verificado con upload real por `curl`.
 
-**Pendiente de Netie:** `RESEND_API_KEY` + `ALERT_EMAIL_FROM` + `ALERT_EMAIL_TO` en Render.
+**Alerta por email descartada (decisión Netie, mismo día):** se construyó y luego se eliminó por completo `utils/alerts.js` (Resend) — Netie ya tiene demasiadas notificaciones de otros ecosistemas. El aviso de cada borrado vive ahora en la conciliación semanal (`avyna-conciliacion-cobranza`), no en notificaciones activas.
 
 ---
 

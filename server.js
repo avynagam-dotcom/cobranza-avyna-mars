@@ -56,7 +56,6 @@ process.env.UPLOADS_DIR = UPLOADS_DIR;
 
 // Importar persistencia DESPUÉS de definir rutas
 const { saveData, appendBusinessAuditLog } = require("./utils/persistence");
-const { enviarAlertaEmail } = require("./utils/alerts");
 
 const DB_FILE = "notas.json"; // persistence.js ya usa DATA_DIR
 
@@ -484,12 +483,6 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
       notas[existingIdx] = ex;
       saveDB(notas);
 
-      if (ex.tipo !== "pedido") {
-        enviarAlertaEmail({ tipo: "CLASIFICACION", nota: ex }).catch((e) =>
-          console.error("[Alerta] Falló envío:", e.message)
-        );
-      }
-
       return res.json({ ok: true, replaced: true, nota: { ...ex, ...computeCredito(ex) } });
     }
 
@@ -528,12 +521,6 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
     // liberarla de inmediato en vez de esperar al siguiente pago.
     if (notaOrigenId) liberarBonificacionesAsociadas(notas, notaOrigenId);
     saveDB(notas);
-
-    if (nota.tipo !== "pedido") {
-      enviarAlertaEmail({ tipo: "CLASIFICACION", nota }).catch((e) =>
-        console.error("[Alerta] Falló envío:", e.message)
-      );
-    }
 
     return res.json({ ok: true, nota: { ...nota, ...computeCredito(nota) } });
   } catch (e) {
@@ -703,10 +690,6 @@ app.delete("/api/notas/:id", (req, res) => {
       notaSnapshot: n,
       deletedBy: n.deletedBy,
     });
-
-    enviarAlertaEmail({ tipo: "BORRADO", nota: n }).catch((e) =>
-      console.error("[Alerta] Falló envío:", e.message)
-    );
 
     return res.json({ ok: true, message: "Nota movida a papelera" });
   } catch (e) {
