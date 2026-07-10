@@ -3,7 +3,7 @@
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
-const pdfParse = require("pdf-parse");
+const { extractTextFromPdf } = require("./extractTextFromPdf");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -55,15 +55,19 @@ process.env.DATA_DIR = DATA_DIR;
 process.env.UPLOADS_DIR = UPLOADS_DIR;
 
 // Importar persistencia DESPUÉS de definir rutas
-const { saveData } = require("./utils/persistence");
+const { saveData, appendBusinessAuditLog } = require("./utils/persistence");
+const { enviarAlertaEmail } = require("./utils/alerts");
 
 const DB_FILE = "notas.json"; // persistence.js ya usa DATA_DIR
 
 // ----- Backup Automático cada 24h a R2
 const { initScheduler } = require("./utils/scheduler");
 
-// Inicializar el Scheduler (Backup Blindado)
-initScheduler({ dataDir: DATA_DIR, uploadsDir: UPLOADS_DIR });
+// Inicializar el Scheduler (Backup Blindado) — se omite en tests: cron.schedule()
+// mantiene vivo el event loop y cuelga `node --test` indefinidamente.
+if (process.env.NODE_ENV !== "test") {
+  initScheduler({ dataDir: DATA_DIR, uploadsDir: UPLOADS_DIR });
+}
 
 // Ensure folders exist (Critical for new locations)
 for (const dir of [DATA_DIR, UPLOADS_DIR]) {
@@ -293,7 +297,9 @@ function computeCredito(nota, now = new Date()) {
 
   let statusCredito = "PRE_ENTREGA";
 
-  if (deliveredAt) {
+  if (!deliveredAt && nota.tipo && nota.tipo !== "pedido") {
+    statusCredito = "PENDIENTE_LIQUIDACION_ORIGEN";
+  } else if (deliveredAt) {
     if (saldo === 0 && total != null) {
       statusCredito = "LIQUIDADO";
     } else if (dueAt) {
@@ -316,6 +322,49 @@ function computeCredito(nota, now = new Date()) {
     saldoFavor,
     statusCredito,
   };
+}
+
+// ----- Clasificación de notas (pedido / bonificación / reposición)
+const TIPOS_NOTA = ["pedido", "bonificacion", "reposicion"];
+
+function validateTipoYJustificacion(tipoRaw, justificacionRaw) {
+  const tipo = tipoRaw && String(tipoRaw).trim() ? String(tipoRaw).trim() : "pedido";
+  if (!TIPOS_NOTA.includes(tipo)) {
+    return { error: "Tipo de nota inválido" };
+  }
+  const justificacion = justificacionRaw ? String(justificacionRaw).trim() : "";
+  if (tipo !== "pedido" && !justificacion) {
+    return { error: "Justificación obligatoria para bonificación/reposición" };
+  }
+  return { tipo, justificacion: justificacion || null };
+}
+
+function resolverNotaOrigen(notaOrigenIdRaw, notas) {
+  const notaOrigenId = notaOrigenIdRaw ? String(notaOrigenIdRaw).trim() : "";
+  if (!notaOrigenId) return { notaOrigenId: null };
+  const origen = notas.find((n) => String(n.id) === notaOrigenId);
+  if (!origen || origen.tipo !== "pedido") {
+    return { error: "notaOrigenId inválido: debe referenciar una nota de tipo pedido existente" };
+  }
+  return { notaOrigenId };
+}
+
+// ----- Liberación automática de bonificaciones/reposiciones al liquidar su pedido de origen
+function liberarBonificacionesAsociadas(notas, notaOrigenId, now = new Date()) {
+  const origen = notas.find((x) => x.id === notaOrigenId);
+  if (!origen) return [];
+  const { saldo } = computeCredito(origen, now);
+  if (saldo !== 0) return [];
+
+  const liberadas = [];
+  for (const n of notas) {
+    if (n.notaOrigenId === notaOrigenId && n.tipo !== "pedido" && !n.deliveredAt && !n.deletedAt) {
+      n.deliveredAt = iso(now);
+      n.dueAt = null; // bonif/repo no tienen ventana de crédito de 15 días — se liquidan al entregarse
+      liberadas.push(n);
+    }
+  }
+  return liberadas;
 }
 
 // I5: Rate limiting en uploads (sin dependencias externas)
@@ -341,11 +390,19 @@ app.use(express.static(PUBLIC_DIR));
 
 // ----- API: listar notas
 app.get("/api/notas", (req, res) => {
-  const notas = loadDB();
+  const notas = loadDB().filter((n) => !n.deletedAt);
   const batchKey = getCurrentBatchKey();
   const now = new Date();
   const notasWithCredito = notas.map((n) => ({ ...n, ...computeCredito(n, now) }));
   res.json({ batchKey, notas: notasWithCredito });
+});
+
+// ----- API: papelera (solo notas soft-deleted, con snapshot completo)
+app.get("/api/notas/eliminadas", (req, res) => {
+  const notas = loadDB().filter((n) => !!n.deletedAt);
+  const now = new Date();
+  const notasWithCredito = notas.map((n) => ({ ...n, ...computeCredito(n, now) }));
+  res.json({ ok: true, notas: notasWithCredito });
 });
 
 // ----- API: subir PDF
@@ -364,6 +421,18 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
     const originalName = req.file.originalname || "nota.pdf";
     const notas = loadDB();
 
+    const tipoResult = validateTipoYJustificacion(req.body.tipo, req.body.justificacion);
+    if (tipoResult.error) {
+      return res.status(400).json({ ok: false, message: tipoResult.error });
+    }
+    const { tipo, justificacion } = tipoResult;
+
+    const origenResult = resolverNotaOrigen(req.body.notaOrigenId, notas);
+    if (origenResult.error) {
+      return res.status(400).json({ ok: false, message: origenResult.error });
+    }
+    const { notaOrigenId } = origenResult;
+
     // ✅ Regla nueva:
     // Si hay una nota con mismo nombre EN EL BATCH:
     // - si NO está entregada => sustituir (mismo id, mismo filename, sobreescribe PDF y actualiza cliente/total)
@@ -375,8 +444,7 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
     );
 
     // Parse PDF (siempre parseamos porque para sustituir necesitamos nuevo total/cliente)
-    const parsed = await pdfParse(req.file.buffer);
-    const text = parsed && parsed.text ? parsed.text : "";
+    const text = (await extractTextFromPdf(req.file.buffer)) || "";
     const cliente = extractClienteFromText(text) || null;
     const total = extractTotalFromText(text);
     const uploadedAt = new Date().toISOString();
@@ -391,10 +459,14 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
 
       // ✅ Sustituir (pre-entrega)
       // Mantener: id, pagado, deliveredAt(null), dueAt(null), firstPaymentAt, batchKey
-      // Actualizar: cliente, total, uploadedAt
+      // Actualizar: cliente, total, uploadedAt, tipo/justificacion/notaOrigenId (permite corregir clasificación)
       ex.cliente = cliente;
       ex.total = typeof total === "number" && Number.isFinite(total) ? total : null;
       ex.uploadedAt = uploadedAt;
+      ex.tipo = tipo;
+      ex.justificacion = justificacion;
+      ex.notaOrigenId = notaOrigenId;
+      ex.entregaDiferida = tipo !== "pedido";
 
       // Guardar / sobreescribir el PDF usando el mismo filename de esa nota
       // (Esto mantiene tu historial limpio y evita crear 2 notas)
@@ -408,6 +480,12 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
 
       notas[existingIdx] = ex;
       saveDB(notas);
+
+      if (ex.tipo !== "pedido") {
+        enviarAlertaEmail({ tipo: "CLASIFICACION", nota: ex }).catch((e) =>
+          console.error("[Alerta] Falló envío:", e.message)
+        );
+      }
 
       return res.json({ ok: true, replaced: true, nota: { ...ex, ...computeCredito(ex) } });
     }
@@ -433,11 +511,26 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
       dueAt: null,
       firstPaymentAt: null,
       uploadedAt,
-      pagos: [] // historial de pagos
+      pagos: [], // historial de pagos
+      tipo,
+      justificacion,
+      notaOrigenId,
+      entregaDiferida: tipo !== "pedido",
+      deletedAt: null,
+      deletedBy: null,
     };
 
     notas.push(nota);
+    // Si el pedido de origen ya está en saldo 0 (ej. bonificación subida a posteriori de liquidar),
+    // liberarla de inmediato en vez de esperar al siguiente pago.
+    if (notaOrigenId) liberarBonificacionesAsociadas(notas, notaOrigenId);
     saveDB(notas);
+
+    if (nota.tipo !== "pedido") {
+      enviarAlertaEmail({ tipo: "CLASIFICACION", nota }).catch((e) =>
+        console.error("[Alerta] Falló envío:", e.message)
+      );
+    }
 
     return res.json({ ok: true, nota: { ...nota, ...computeCredito(nota) } });
   } catch (e) {
@@ -457,6 +550,13 @@ app.post("/api/entregar", (req, res) => {
     if (idx === -1) return res.status(404).json({ ok: false, message: "Nota no encontrada" });
 
     const n = notas[idx];
+
+    if (n.tipo && n.tipo !== "pedido") {
+      return res.status(400).json({
+        ok: false,
+        message: "Bonificaciones/reposiciones se entregan automáticamente al liquidar el pedido de origen, no manualmente.",
+      });
+    }
 
     if (!n.deliveredAt) {
       const now = new Date();
@@ -535,6 +635,7 @@ app.post("/api/pago", (req, res) => {
     }
 
     notas[idx] = n;
+    liberarBonificacionesAsociadas(notas, n.id);
     saveDB(notas);
 
     return res.json({ ok: true, nota: { ...n, ...computeCredito(n) } });
@@ -544,7 +645,42 @@ app.post("/api/pago", (req, res) => {
   }
 });
 
-// ----- API: eliminar nota
+// ----- API: vincular una bonificación/reposición a su pedido de origen a posteriori
+// (Mar subió solo justificación en texto libre, sin notaOrigenId estructurado)
+app.post("/api/notas/:id/vincular-origen", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notaOrigenId } = req.body || {};
+    if (!notaOrigenId) return res.status(400).json({ ok: false, message: "Falta notaOrigenId" });
+
+    const notas = loadDB();
+    const idx = notas.findIndex((n) => String(n.id) === String(id));
+    if (idx === -1) return res.status(404).json({ ok: false, message: "Nota no encontrada" });
+
+    const n = notas[idx];
+    if (n.tipo === "pedido") {
+      return res.status(400).json({ ok: false, message: "Solo bonificaciones/reposiciones pueden vincularse a un origen" });
+    }
+
+    const origenResult = resolverNotaOrigen(notaOrigenId, notas);
+    if (origenResult.error) {
+      return res.status(400).json({ ok: false, message: origenResult.error });
+    }
+
+    n.notaOrigenId = origenResult.notaOrigenId;
+    notas[idx] = n;
+    liberarBonificacionesAsociadas(notas, n.notaOrigenId);
+    saveDB(notas);
+
+    const actualizada = notas.find((x) => x.id === n.id);
+    return res.json({ ok: true, nota: { ...actualizada, ...computeCredito(actualizada) } });
+  } catch (e) {
+    console.error("VINCULAR-ORIGEN ERROR:", e);
+    return res.status(500).json({ ok: false, message: "Error al vincular origen" });
+  }
+});
+
+// ----- API: eliminar nota (soft-delete auditado — el PDF y el registro se conservan)
 app.delete("/api/notas/:id", (req, res) => {
   try {
     const { id } = req.params;
@@ -555,24 +691,21 @@ app.delete("/api/notas/:id", (req, res) => {
     if (idx === -1) return res.status(404).json({ ok: false, message: "Nota no encontrada" });
 
     const n = notas[idx];
-
-    // Intentar borrar el archivo físico
-    if (n.filename) {
-      const filePath = path.join(UPLOADS_DIR, n.filename);
-      if (fs.existsSync(filePath)) {
-        try {
-          fs.unlinkSync(filePath);
-        } catch (err) {
-          console.error(`[Delete] Error borrando archivo ${n.filename}:`, err.message);
-        }
-      }
-    }
-
-    // Quitar de la DB
-    notas.splice(idx, 1);
+    n.deletedAt = new Date().toISOString();
+    n.deletedBy = "unknown"; // no hay auth en el sistema hoy; hook para futuro header X-User
+    notas[idx] = n;
     saveDB(notas);
 
-    return res.json({ ok: true, message: "Nota eliminada" });
+    appendBusinessAuditLog("NOTA_ELIMINADA", {
+      notaSnapshot: n,
+      deletedBy: n.deletedBy,
+    });
+
+    enviarAlertaEmail({ tipo: "BORRADO", nota: n }).catch((e) =>
+      console.error("[Alerta] Falló envío:", e.message)
+    );
+
+    return res.json({ ok: true, message: "Nota movida a papelera" });
   } catch (e) {
     console.error("DELETE ERROR:", e);
     return res.status(500).json({ ok: false, message: "Error al eliminar nota" });
@@ -581,8 +714,9 @@ app.delete("/api/notas/:id", (req, res) => {
 
 // ----- KPIs globales (SOLO ENTREGADAS) ✅ consistencia y utilidades
 app.get("/api/kpis", (req, res) => {
-  const notas = loadDB();
-  const entregadas = notas.filter((n) => !!n.deliveredAt);
+  const notas = loadDB().filter((n) => !n.deletedAt);
+  // Solo pedidos cuentan como "cobrable"/"cobrado" — bonif/repo nunca generan ingreso.
+  const entregadas = notas.filter((n) => !!n.deliveredAt && n.tipo === "pedido");
 
   let totalCobrable = 0;
   let totalCobrado = 0;
@@ -612,6 +746,16 @@ app.get("/api/kpis", (req, res) => {
   const utilidadCobrada = Math.max(utilidadCobradaBruta - totalComisiones, 0);
   const utilidadPorCobrar = totalSaldo * MARGIN;
 
+  // Gasto real: solo cuenta cuando ya se liberó (deliveredAt) — antes es intención, no gasto materializado.
+  let gastoBonificaciones = 0;
+  let gastoReposiciones = 0;
+  for (const n of notas) {
+    if (!n.deliveredAt) continue;
+    const total = typeof n.total === "number" && Number.isFinite(n.total) ? n.total : 0;
+    if (n.tipo === "bonificacion") gastoBonificaciones += total;
+    if (n.tipo === "reposicion") gastoReposiciones += total;
+  }
+
   res.json({
     ok: true,
     totalCobrable,
@@ -621,16 +765,18 @@ app.get("/api/kpis", (req, res) => {
     utilidadCobrada,
     utilidadPorCobrar,
     totalComisiones: Number(totalComisiones.toFixed(2)),
+    gastoBonificaciones,
+    gastoReposiciones,
   });
 });
 
 // ----- quién falta por pagar (entregadas con saldo)
 app.get("/api/faltantes", (req, res) => {
-  const notas = loadDB();
+  const notas = loadDB().filter((n) => !n.deletedAt);
   const now = new Date();
 
   const faltantes = notas
-    .filter((n) => !!n.deliveredAt)
+    .filter((n) => !!n.deliveredAt && n.tipo === "pedido")
     .map((n) => ({ ...n, ...computeCredito(n, now) }))
     .filter((n) => (typeof n.saldo === "number" ? n.saldo > 0 : true))
     .sort((a, b) => {
@@ -710,7 +856,11 @@ app.post("/api/closing/start", (req, res) => {
 
 // ----- Start
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en http://localhost:${PORT}`);
-  console.log(`Batch actual (martes 00:00): ${getCurrentBatchKey()}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Servidor corriendo en http://localhost:${PORT}`);
+    console.log(`Batch actual (martes 00:00): ${getCurrentBatchKey()}`);
+  });
+}
+
+module.exports = app;

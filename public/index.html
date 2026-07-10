@@ -246,6 +246,48 @@
       display: none
     }
 
+    .uploader select,
+    .uploader input[type="text"] {
+      padding: 12px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, .12);
+      background: #f7f8fb;
+      color: #141414;
+      outline: none;
+      font-size: 14px;
+    }
+
+    .badgeTipo {
+      display: inline-block;
+      margin-top: 4px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .03em;
+      cursor: help;
+    }
+
+    .badgeTipo.bonificacion {
+      background: rgba(240, 200, 91, .18);
+      color: var(--gold);
+      border: 1px solid rgba(240, 200, 91, .4);
+    }
+
+    .badgeTipo.reposicion {
+      background: rgba(74, 155, 255, .18);
+      color: #7fb4ff;
+      border: 1px solid rgba(74, 155, 255, .4);
+    }
+
+    .kpiGridBonif {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
     .msg {
       margin: 10px 0 10px 0;
       font-weight: 900
@@ -681,8 +723,22 @@
         </div>
       </div>
 
+      <div class="kpiGridBonif">
+        <div class="kpiCard">
+          <div class="kpiTitle">🎁 Gasto en bonificaciones</div>
+          <div class="kpiValue" id="kpiGastoBonif">—</div>
+          <div class="kpiSub">Producto regalado, liberado y ya entregado</div>
+        </div>
+        <div class="kpiCard">
+          <div class="kpiTitle">🔄 Gasto en reposiciones</div>
+          <div class="kpiValue" id="kpiGastoRepo">—</div>
+          <div class="kpiSub">Producto repuesto, liberado y ya entregado</div>
+        </div>
+      </div>
+
       <div class="kpiActions">
         <button class="btnGhost" id="whoBtn" type="button">Ver quién falta</button>
+        <button class="btnGhost" id="trashBtn" type="button">Ver eliminadas</button>
         <button class="btnGhost" id="backBatchBtn" type="button">Volver a batch</button>
         <button class="btnGhost" id="reportBtn" type="button" disabled>Reporte mensual</button>
       </div>
@@ -691,6 +747,13 @@
     <!-- Uploader -->
     <div class="uploader">
       <div id="dropZone" class="drop">Arrastra aquí el PDF</div>
+      <select id="tipoNota">
+        <option value="pedido" selected>Pedido normal</option>
+        <option value="bonificacion">Bonificación</option>
+        <option value="reposicion">Reposición</option>
+      </select>
+      <input id="justificacionInput" type="text" placeholder="Justificación (obligatoria)" style="display:none" />
+      <input id="notaOrigenIdInput" type="text" placeholder="ID del pedido de origen (opcional)" style="display:none" />
       <button id="pickBtn" class="btn" type="button">Seleccionar PDF</button>
       <input id="fileInput" type="file" accept="application/pdf" />
     </div>
@@ -795,12 +858,12 @@
       <h3 style="color:var(--red)">Eliminar Nota</h3>
       <div class="desc" id="delDesc"></div>
       <div class="desc" style="margin-top:10px; font-weight:bold; color:var(--red)">
-        ⚠️ Esta acción es permanente y borrará el PDF.
+        ⚠️ Se moverá a la papelera (el PDF se conserva) y se te avisará por correo de inmediato.
       </div>
 
       <div class="row">
         <button id="cancelDel" class="btn2" type="button">Cancelar</button>
-        <button id="saveDel" class="btnDanger" type="button">Eliminar permanentemente</button>
+        <button id="saveDel" class="btnDanger" type="button">Mover a papelera</button>
       </div>
     </div>
   </div>
@@ -832,8 +895,22 @@
 
     // Actions
     const whoBtn = document.getElementById("whoBtn");
+    const trashBtn = document.getElementById("trashBtn");
     const backBatchBtn = document.getElementById("backBatchBtn");
     const reportBtn = document.getElementById("reportBtn");
+    const kpiGastoBonif = document.getElementById("kpiGastoBonif");
+    const kpiGastoRepo = document.getElementById("kpiGastoRepo");
+
+    // Uploader: clasificación
+    const tipoNotaSelect = document.getElementById("tipoNota");
+    const justificacionInput = document.getElementById("justificacionInput");
+    const notaOrigenIdInput = document.getElementById("notaOrigenIdInput");
+    tipoNotaSelect.addEventListener("change", () => {
+      const show = tipoNotaSelect.value !== "pedido";
+      justificacionInput.style.display = show ? "" : "none";
+      notaOrigenIdInput.style.display = show ? "" : "none";
+      if (!show) { justificacionInput.value = ""; notaOrigenIdInput.value = ""; }
+    });
 
     // Vencidos box
     const vencidoBox = document.getElementById("vencidoBox");
@@ -1042,18 +1119,28 @@
       if (s === "VENCIDO") return { text: "Vencido", dot: "sRed", clickable: false };
       if (s === "POR_VENCER") return { text: "Por vencer", dot: "sGold", clickable: false };
       if (s === "EN_PLAZO") return { text: "En plazo", dot: "sGreen", clickable: false };
+      if (s === "PENDIENTE_LIQUIDACION_ORIGEN") return { text: "Espera liquidación de origen", dot: "sGold", clickable: false };
       return { text: "Pre-entrega", dot: "sGold", clickable: true };
     }
 
-    function render(list) {
+    function tipoBadge(n) {
+      if (!n.tipo || n.tipo === "pedido") return "";
+      const label = n.tipo === "reposicion" ? "🔄 Reposición" : "🎁 Bonificación";
+      const title = escapeHtml(n.justificacion || "Sin justificación registrada");
+      return `<div class="badgeTipo ${n.tipo}" title="${title}">${label}</div>`;
+    }
+
+    function render(list, opts) {
+      const readonly = !!(opts && opts.readonly);
+
       if (!list || !list.length) {
-        tbody.innerHTML = `<tr><td class="muted" colspan="6">Sin notas para mostrar.</td></tr>`;
+        tbody.innerHTML = `<tr><td class="muted" colspan="6">${readonly ? "Papelera vacía." : "Sin notas para mostrar."}</td></tr>`;
         return;
       }
 
       tbody.innerHTML = list.map(n => {
         let client = escapeHtml(n.cliente || n.originalName || n.filename || "—");
-        
+
         // Check VIP
         if (getVipStatus(n.cliente, window.__allNotas)) {
             client = "⭐ " + client;
@@ -1068,33 +1155,38 @@
 
         const st = statusLabel(n);
         const due = n.dueAt ? new Date(n.dueAt).toLocaleDateString("es-MX") : null;
+        const clickable = st.clickable && !readonly;
 
         const statusHtml = `
           <div>
-            <div class="statusPill ${st.clickable ? "clickable" : ""}" data-ent="${st.clickable ? n.id : ""}">
+            <div class="statusPill ${clickable ? "clickable" : ""}" data-ent="${clickable ? n.id : ""}">
               <span class="sDot ${st.dot}"></span>
               ${escapeHtml(st.text)}
             </div>
-            ${due ? `<div class="statusHint">Vence: ${escapeHtml(due)}</div>` : (st.clickable ? `<div class="statusHint">Click para marcar entregado</div>` : ``)}
+            ${due ? `<div class="statusHint">Vence: ${escapeHtml(due)}</div>` : (clickable ? `<div class="statusHint">Click para marcar entregado</div>` : ``)}
           </div>
         `;
 
+        const acciones = readonly
+          ? `<div class="muted" style="font-size:11px">${n.deletedAt ? new Date(n.deletedAt).toLocaleString("es-MX") : ""}</div>`
+          : `<div style="display:flex;gap:6px;justify-content:flex-end">
+                <button class="btnSmall" data-pay="${n.id}">Pago</button>
+                <button class="btnDanger" data-del="${n.id}">✕</button>
+              </div>`;
+
         return `
           <tr>
-            <td style="font-weight:900">${client}</td>
+            <td style="font-weight:900">${client}${tipoBadge(n)}</td>
             <td class="right">${total}</td>
             <td class="right">${pagado}</td>
             <td class="right">${saldoCell}</td>
             <td>${statusHtml}</td>
-            <td class="right">
-              <div style="display:flex;gap:6px;justify-content:flex-end">
-                <button class="btnSmall" data-pay="${n.id}">Pago</button>
-                <button class="btnDanger" data-del="${n.id}">✕</button>
-              </div>
-            </td>
+            <td class="right">${acciones}</td>
           </tr>
         `;
       }).join("");
+
+      if (readonly) return;
 
       tbody.querySelectorAll("[data-pay]").forEach(b => {
         b.addEventListener("click", () => openPay(b.getAttribute("data-pay")));
@@ -1110,6 +1202,25 @@
         b.addEventListener("click", () => openDel(b.getAttribute("data-del")));
       });
     }
+
+    // Papelera (soft-deleted)
+    let trashMode = false;
+    async function toggleTrash() {
+      trashMode = !trashMode;
+      trashBtn.textContent = trashMode ? "Volver al tablero" : "Ver eliminadas";
+      if (trashMode) {
+        try {
+          const r = await fetch("/api/notas/eliminadas", { cache: "no-store" });
+          const j = await r.json();
+          render(j.notas || [], { readonly: true });
+        } catch (e) {
+          setMsg("err", "No se pudo cargar la papelera");
+        }
+      } else {
+        applyFilter();
+      }
+    }
+    trashBtn.addEventListener("click", toggleTrash);
 
     function updateBackBatchButton() {
       const isPend = window.__viewMode === "pendientes";
@@ -1143,6 +1254,7 @@
         let pendientes = all
           .filter(n => !!n.deliveredAt)
           .filter(n => typeof n.saldo === "number" && n.saldo > 0)
+          .filter(n => n.tipo === "pedido" || !n.tipo) // defensivo: bonif/repo no son "quién falta"
           .sort((a, b) => {
             const ra = statusRank(a.statusCredito);
             const rb = statusRank(b.statusCredito);
@@ -1229,6 +1341,8 @@
         kpiUtilCobrada.textContent = money(j.utilidadCobrada || 0);
         kpiUtilPorCobrar.textContent = money(j.utilidadPorCobrar || 0);
         kpiComisiones.textContent = money(j.totalComisiones || 0);
+        kpiGastoBonif.textContent = money(j.gastoBonificaciones || 0);
+        kpiGastoRepo.textContent = money(j.gastoReposiciones || 0);
 
         const w = Math.max(0, Math.min(100, Math.round(pct * 100)));
         kpiBar.style.width = w + "%";
@@ -1260,7 +1374,11 @@
           deliveredAt: n.deliveredAt || null,
           dueAt: n.dueAt || null,
           statusCredito: n.statusCredito || null,
-          uploadedAt: n.uploadedAt || null
+          uploadedAt: n.uploadedAt || null,
+          tipo: n.tipo || "pedido",
+          justificacion: n.justificacion || null,
+          notaOrigenId: n.notaOrigenId || null,
+          entregaDiferida: !!n.entregaDiferida
         }));
 
         window.__allNotas = notas;
@@ -1282,9 +1400,21 @@
     }
 
     async function uploadFile(file) {
+      const tipo = tipoNotaSelect.value || "pedido";
+      const justificacion = (justificacionInput.value || "").trim();
+      const notaOrigenId = (notaOrigenIdInput.value || "").trim();
+
+      if (tipo !== "pedido" && !justificacion) {
+        setMsg("err", "Debes indicar la justificación para bonificación/reposición.");
+        return;
+      }
+
       setMsg("", "");
       const fd = new FormData();
       fd.append("pdf", file);
+      fd.append("tipo", tipo);
+      if (justificacion) fd.append("justificacion", justificacion);
+      if (notaOrigenId) fd.append("notaOrigenId", notaOrigenId);
 
       let j = null;
       try {
@@ -1297,6 +1427,11 @@
 
       if (j && j.ok) {
         setMsg("ok", "PDF recibido correctamente ✓");
+        tipoNotaSelect.value = "pedido";
+        justificacionInput.value = "";
+        notaOrigenIdInput.value = "";
+        justificacionInput.style.display = "none";
+        notaOrigenIdInput.style.display = "none";
       } else {
         if (j && j.duplicate) setMsg("err", "Nota duplicada");
         else setMsg("err", (j && j.message) ? j.message : "Error al subir PDF");

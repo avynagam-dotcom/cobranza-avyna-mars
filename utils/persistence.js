@@ -69,4 +69,25 @@ function saveData(filename, data, baseDir = null) {
     }
 }
 
-module.exports = { saveData };
+/**
+ * Auditoría de NEGOCIO (clasificación de notas, borrados) — separada del
+ * audit.jsonl técnico de appendAuditLog (que solo audita guardado atómico).
+ */
+function appendBusinessAuditLog(action, details) {
+    try {
+        const dataDir = getDataDir();
+        const auditFile = path.join(dataDir, 'business-audit.jsonl');
+
+        const entry = {
+            timestamp: new Date().toISOString(),
+            action,
+            ...details,
+        };
+
+        fs.appendFileSync(auditFile, JSON.stringify(entry) + '\n');
+    } catch (err) {
+        console.error('[Persistence] Business Audit Log Error:', err.message);
+    }
+}
+
+module.exports = { saveData, appendBusinessAuditLog };
