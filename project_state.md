@@ -1,5 +1,11 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (decisión de negocio: gasto en bonificaciones cuenta desde captura)
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (feature: corregir clasificación de una nota ya capturada)
+
+---
+
+## Sesión 2026-07-12 (4) — Bug real en producción: pedido grande capturado por error como bonificación, sin forma de corregirlo
+
+Réplica exacta de `cobranza-avyna-backend`. Netie reportó (con screenshot) un pedido real de Liliana Guzman ($6,961) mal clasificado como bonificación, sin botón de "marcar entregado" y sin forma de corregirlo salvo borrar/resubir. Nuevo endpoint `POST /api/notas/:id/corregir-tipo` (bloqueado si ya tiene pagos registrados) + modal "Corregir clasificación" activado al click en el badge 🎁/🔄 (antes no hacía nada). También fix de `margin-left` en `.badgeTipo` (texto pegado al nombre del cliente). 30/30 tests en verde.
 
 ---
 

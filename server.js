@@ -674,6 +674,50 @@ app.post("/api/notas/:id/vincular-origen", (req, res) => {
   }
 });
 
+// ----- API: corregir la clasificación (tipo) de una nota ya capturada
+// (ej. un pedido subido por error como bonificación — corrección manual, no re-upload)
+app.post("/api/notas/:id/corregir-tipo", (req, res) => {
+  try {
+    const { id } = req.params;
+    const notas = loadDB();
+    const idx = notas.findIndex((n) => String(n.id) === String(id) && !n.deletedAt);
+    if (idx === -1) return res.status(404).json({ ok: false, message: "Nota no encontrada" });
+
+    const n = notas[idx];
+    if (typeof n.pagado === "number" && n.pagado > 0) {
+      return res.status(400).json({ ok: false, message: "No se puede corregir la clasificación de una nota con pagos registrados" });
+    }
+
+    const tipoResult = validateTipoYJustificacion(req.body.tipo, req.body.justificacion);
+    if (tipoResult.error) {
+      return res.status(400).json({ ok: false, message: tipoResult.error });
+    }
+    const { tipo, justificacion } = tipoResult;
+
+    const origenResult = resolverNotaOrigen(req.body.notaOrigenId, notas);
+    if (origenResult.error) {
+      return res.status(400).json({ ok: false, message: origenResult.error });
+    }
+
+    n.tipo = tipo;
+    n.justificacion = justificacion;
+    n.notaOrigenId = origenResult.notaOrigenId;
+    n.entregaDiferida = tipo !== "pedido";
+    n.deliveredAt = null;
+    n.dueAt = null;
+
+    notas[idx] = n;
+    if (n.notaOrigenId) liberarBonificacionesAsociadas(notas, n.notaOrigenId);
+    saveDB(notas);
+
+    const actualizada = notas.find((x) => x.id === n.id);
+    return res.json({ ok: true, nota: { ...actualizada, ...computeCredito(actualizada) } });
+  } catch (e) {
+    console.error("CORREGIR-TIPO ERROR:", e);
+    return res.status(500).json({ ok: false, message: "Error al corregir clasificación" });
+  }
+});
+
 // ----- API: eliminar nota (soft-delete auditado — el PDF y el registro se conservan)
 app.delete("/api/notas/:id", (req, res) => {
   try {

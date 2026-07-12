@@ -260,13 +260,14 @@
     .badgeTipo {
       display: inline-block;
       margin-top: 4px;
+      margin-left: 8px;
       padding: 3px 8px;
       border-radius: 999px;
       font-size: 10px;
       font-weight: 800;
       text-transform: uppercase;
       letter-spacing: .03em;
-      cursor: help;
+      cursor: pointer;
     }
 
     .badgeTipo.bonificacion {
@@ -855,6 +856,31 @@
     </div>
   </div>
 
+  <!-- Modal: Corregir clasificación -->
+  <div id="overlayTipo" class="overlay" role="dialog" aria-modal="true">
+    <div class="modal">
+      <h3>Corregir clasificación</h3>
+      <div class="muted" id="tipoClient" style="margin-top:-2px"></div>
+
+      <label>Tipo correcto</label>
+      <select id="tipoFix">
+        <option value="pedido">Pedido normal</option>
+        <option value="bonificacion">Bonificación</option>
+        <option value="reposicion">Reposición</option>
+      </select>
+      <input id="justificacionFix" type="text" placeholder="Justificación (obligatoria para bonif/repo)" style="display:none; margin-top:8px" />
+      <input id="origenSearchFix" type="text" placeholder="Buscar pedido por cliente..." style="display:none; margin-top:8px" />
+      <select id="origenFix" style="display:none; margin-top:8px">
+        <option value="">Sin pedido de origen (opcional)</option>
+      </select>
+
+      <div class="row">
+        <button id="cancelTipoFix" class="btn2" type="button">Cancelar</button>
+        <button id="saveTipoFix" class="btn3" type="button">Guardar corrección</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: Eliminar -->
   <div id="overlayDel" class="overlay" role="dialog" aria-modal="true">
     <div class="modal">
@@ -1150,8 +1176,8 @@
     function tipoBadge(n) {
       if (!n.tipo || n.tipo === "pedido") return "";
       const label = n.tipo === "reposicion" ? "🔄 Reposición" : "🎁 Bonificación";
-      const title = escapeHtml(n.justificacion || "Sin justificación registrada");
-      return `<div class="badgeTipo ${n.tipo}" title="${title}">${label}</div>`;
+      const title = escapeHtml((n.justificacion || "Sin justificación registrada") + " — click para corregir clasificación");
+      return `<div class="badgeTipo ${n.tipo}" title="${title}" data-fixtipo="${n.id}">${label}</div>`;
     }
 
     function render(list, opts) {
@@ -1224,6 +1250,10 @@
 
       tbody.querySelectorAll("[data-del]").forEach(b => {
         b.addEventListener("click", () => openDel(b.getAttribute("data-del")));
+      });
+
+      tbody.querySelectorAll("[data-fixtipo]").forEach(b => {
+        b.addEventListener("click", (e) => { e.stopPropagation(); openTipoFix(b.getAttribute("data-fixtipo")); });
       });
     }
 
@@ -1548,6 +1578,87 @@
 
       closeEnt();
       await refreshList();
+    });
+
+    // Modal Corregir Tipo
+    const overlayTipo = document.getElementById("overlayTipo");
+    const tipoClient = document.getElementById("tipoClient");
+    const tipoFix = document.getElementById("tipoFix");
+    const justificacionFix = document.getElementById("justificacionFix");
+    const origenSearchFix = document.getElementById("origenSearchFix");
+    const origenFix = document.getElementById("origenFix");
+    const cancelTipoFix = document.getElementById("cancelTipoFix");
+    const saveTipoFix = document.getElementById("saveTipoFix");
+    let fixingId = null;
+
+    function populateOrigenFix() {
+      const prev = origenFix.value;
+      const q = (origenSearchFix.value || "").trim().toLowerCase();
+      const pedidos = (window.__allNotas || [])
+        .filter(n => (n.tipo || "pedido") === "pedido")
+        .filter(n => !q || String(n.cliente || n.originalName || "").toLowerCase().includes(q));
+      origenFix.innerHTML = `<option value="">Sin pedido de origen (opcional)</option>` +
+        pedidos.map(n => {
+          const label = `${n.cliente || n.originalName || "Sin cliente"} — ${money(n.total)}`;
+          return `<option value="${n.id}">${escapeHtml(label)}</option>`;
+        }).join("");
+      origenFix.value = prev && pedidos.some(n => n.id === prev) ? prev : "";
+    }
+    origenSearchFix.addEventListener("input", populateOrigenFix);
+
+    function toggleTipoFixFields() {
+      const show = tipoFix.value !== "pedido";
+      justificacionFix.style.display = show ? "" : "none";
+      origenSearchFix.style.display = show ? "" : "none";
+      origenFix.style.display = show ? "" : "none";
+      if (show) populateOrigenFix();
+    }
+    tipoFix.addEventListener("change", toggleTipoFixFields);
+
+    function openTipoFix(id) {
+      fixingId = id;
+      const n = (window.__allNotas || []).find(x => String(x.id) === String(id));
+      if (!n) return;
+      tipoClient.textContent = n.cliente || n.originalName || "";
+      tipoFix.value = n.tipo || "pedido";
+      justificacionFix.value = n.justificacion || "";
+      origenSearchFix.value = "";
+      toggleTipoFixFields();
+      if (n.notaOrigenId) origenFix.value = n.notaOrigenId;
+      overlayTipo.classList.add("show");
+    }
+    function closeTipoFix() {
+      overlayTipo.classList.remove("show");
+      fixingId = null;
+    }
+    cancelTipoFix.addEventListener("click", closeTipoFix);
+    overlayTipo.addEventListener("click", (e) => { if (e.target === overlayTipo) closeTipoFix(); });
+
+    saveTipoFix.addEventListener("click", async () => {
+      if (!fixingId) return;
+      const tipo = tipoFix.value || "pedido";
+      const justificacion = (justificacionFix.value || "").trim();
+      const notaOrigenId = (origenFix.value || "").trim();
+
+      if (tipo !== "pedido" && !justificacion) {
+        setMsg("err", "Debes indicar la justificación para bonificación/reposición.");
+        return;
+      }
+
+      const r = await fetch(`/api/notas/${fixingId}/corregir-tipo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tipo, justificacion: justificacion || undefined, notaOrigenId: notaOrigenId || undefined })
+      });
+      const j = await r.json().catch(() => null);
+
+      if (r.ok && j && j.ok) {
+        setMsg("ok", "Clasificación corregida ✓");
+        closeTipoFix();
+        await refreshList();
+      } else {
+        setMsg("err", (j && j.message) ? j.message : `Error del servidor (${r.status})`);
+      }
     });
 
     // Eliminar modal
