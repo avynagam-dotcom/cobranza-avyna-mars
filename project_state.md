@@ -1,5 +1,23 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-10
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12
+
+---
+
+## Sesión 2026-07-12 — Fix: "ID del pedido de origen" era un campo imposible de llenar
+
+**Bug reportado por Netie:** al subir una nota como bonificación, tras llenar justificación y "a qué nota está asociado" pegando el número de venta impreso en la nota, el upload fallaba con error.
+
+**Causa raíz (no era bug de backend):** el campo `notaOrigenIdInput` era un input de texto libre con placeholder "ID del pedido de origen" que esperaba el UUID interno generado por el sistema (`crypto.randomUUID()`) — un valor que NUNCA se muestra en la UI y que el sistema tampoco extrae del PDF. El "número de venta" que Netie/Mar pegaban ahí es un dato que este sistema ni siquiera captura. `resolverNotaOrigen()` en el backend hacía bien su trabajo (rechazar IDs que no existen) — el problema era pedirle a un humano un dato que no tenía forma de conocer.
+
+**Fix:** `notaOrigenIdInput` pasó de `<input type="text">` a `<select>` poblado con las notas tipo "pedido" existentes (`cliente — total`), function `populateOrigenSelect()`. El usuario elige de una lista visible; el `value` real (UUID) se resuelve solo. Replicado idéntico en `cobranza-avyna-backend`. 22/22 tests en verde en ambos (backend no cambió, solo frontend). Verificado end-to-end con navegador real (Chrome DevTools MCP): bonificación subida con nota de origen seleccionada → "PDF recibido correctamente ✓", badge 🎁 y estado "Espera liquidación de origen".
+
+---
+
+## Sesión 2026-07-10 (tarde) — Restauración manual de notas borradas por error
+
+Mar borró 3 notas. Restauradas 2 en producción vía comando one-off en Render Shell (respaldo previo de `notas.json`, `deletedAt=null` por ID exacto): **Antonia Herros $1,460** (conservaba pago de $730 registrado — restaurar, no resubir, para no perderlo) y **Esmeralda Quiroz $3,336** (queda en pre-entrega sola porque `deliveredAt` ya era null). Dejada borrada la duplicada **Antonia $1,414** (sin pagos, borrado justificado — existe la buena en batch normal). Verificado por GET `/api/notas/eliminadas` y `/api/notas`.
+
+**Confirmado hueco de UX:** no hay endpoint/botón para restaurar desde papelera. Netie decidió NO construir feature (pasa muy poco). Render CLI instalado en la laptop (v2.21.0) para futuras restauraciones sin Shell manual, tras `render login`. URL prod: `cobranza-avyna-mars.onrender.com`.
 
 ---
 

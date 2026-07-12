@@ -753,7 +753,9 @@
         <option value="reposicion">Reposición</option>
       </select>
       <input id="justificacionInput" type="text" placeholder="Justificación (obligatoria)" style="display:none" />
-      <input id="notaOrigenIdInput" type="text" placeholder="ID del pedido de origen (opcional)" style="display:none" />
+      <select id="notaOrigenIdInput" style="display:none">
+        <option value="">Sin pedido de origen (opcional)</option>
+      </select>
       <button id="pickBtn" class="btn" type="button">Seleccionar PDF</button>
       <input id="fileInput" type="file" accept="application/pdf" />
     </div>
@@ -905,10 +907,22 @@
     const tipoNotaSelect = document.getElementById("tipoNota");
     const justificacionInput = document.getElementById("justificacionInput");
     const notaOrigenIdInput = document.getElementById("notaOrigenIdInput");
+    function populateOrigenSelect() {
+      const prev = notaOrigenIdInput.value;
+      const pedidos = (window.__allNotas || []).filter(n => (n.tipo || "pedido") === "pedido");
+      notaOrigenIdInput.innerHTML = `<option value="">Sin pedido de origen (opcional)</option>` +
+        pedidos.map(n => {
+          const label = `${n.cliente || n.originalName || "Sin cliente"} — ${money(n.total)}`;
+          return `<option value="${n.id}">${escapeHtml(label)}</option>`;
+        }).join("");
+      notaOrigenIdInput.value = prev && pedidos.some(n => n.id === prev) ? prev : "";
+    }
+
     tipoNotaSelect.addEventListener("change", () => {
       const show = tipoNotaSelect.value !== "pedido";
       justificacionInput.style.display = show ? "" : "none";
       notaOrigenIdInput.style.display = show ? "" : "none";
+      if (show) populateOrigenSelect();
       if (!show) { justificacionInput.value = ""; notaOrigenIdInput.value = ""; }
     });
 
@@ -1382,6 +1396,7 @@
         }));
 
         window.__allNotas = notas;
+        if (notaOrigenIdInput.style.display !== "none") populateOrigenSelect();
         countAll.textContent = String(notas.length);
 
         const current = notas.filter(x => String(x.batchKey || "") === String(window.__batchKey || ""));
