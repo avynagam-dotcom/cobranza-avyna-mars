@@ -100,6 +100,31 @@ test("DELETE escribe una línea en business-audit.jsonl", async () => {
   }
 });
 
+test("Subir mismo filename+batch DESPUÉS de borrar la nota crea una nota NUEVA activa, no resucita la borrada", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
+  try {
+    const nota = await crearNota(app);
+    await request(app).delete(`/api/notas/${nota.id}`);
+
+    const res = await request(app)
+      .post("/api/upload")
+      .attach("pdf", pdfBuffer(), "nota.pdf");
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.ok, true);
+    assert.notStrictEqual(res.body.nota.id, nota.id, "debe crear una nota nueva, no resucitar la borrada");
+    assert.strictEqual(res.body.nota.deletedAt, null);
+
+    const list = await request(app).get("/api/notas");
+    assert.ok(list.body.notas.some((n) => n.id === res.body.nota.id), "la nota nueva debe aparecer en /api/notas");
+
+    const trash = await request(app).get("/api/notas/eliminadas");
+    assert.ok(trash.body.notas.some((n) => n.id === nota.id), "la nota vieja debe seguir intacta en la papelera");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
 test("DELETE sobre un id inexistente sigue devolviendo 404", async () => {
   const { app, tmpDir } = setupTestServer({ pdfText: "" });
   try {

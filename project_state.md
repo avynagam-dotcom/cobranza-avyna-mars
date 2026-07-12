@@ -1,5 +1,15 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (fix crítico: notas borradas se resucitaban invisibles)
+
+---
+
+## Sesión 2026-07-12 (2) — Fix crítico: nota borrada + resubida quedaba invisible en papelera (dinero fantasma)
+
+Réplica exacta del fix aplicado en `cobranza-avyna-backend`. La lógica de "sustituir nota existente" en `POST /api/upload` no excluía notas soft-deleted (`deletedAt`) — borrar una nota mal capturada y resubir el mismo PDF la resucitaba silenciosamente sin limpiar `deletedAt`: quedaba invisible, sin contar en ningún KPI, sin poder recuperarla desde la UI. Fix: excluir `!n.deletedAt` del match. Test TDD agregado, 23/23 en verde.
+
+Además: buscador (`#origenSearch`) en el selector de nota de origen, y el contador "Pendientes" del header ahora excluye bonificaciones/reposiciones.
+
+**Pregunta de negocio abierta (ver detalle en `project_state.md` de backend):** ¿el KPI de gasto en bonificaciones debe contar desde que se captura, o solo cuando se libera (diseño actual)?
 
 ---
 

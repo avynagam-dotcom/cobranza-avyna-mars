@@ -441,6 +441,7 @@ app.post("/api/upload", upload.single("pdf"), async (req, res) => {
     // - si YA está entregada => bloquear (duplicado)
     const existingIdx = notas.findIndex(
       (n) =>
+        !n.deletedAt &&
         String(n.batchKey) === String(batchKey) &&
         String(n.originalName || "").toLowerCase() === String(originalName).toLowerCase()
     );
