@@ -69,6 +69,28 @@ test("liquidar el pedido de origen al 100% libera automáticamente su bonificaci
   }
 });
 
+test("bonificación/reposición liberada nunca muestra estado de cobranza real (VENCIDO/POR_VENCER/EN_PLAZO) — no hay nada que cobrar en un regalo", async () => {
+  const { app, tmpDir, setPdfText } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 1000.00" });
+  try {
+    const pedido = await crearNota(app);
+    setPdfText("CLIENTE: Ana Test\nTOTAL: 200.00");
+    const bonif = await crearNota(app, {
+      tipo: "bonificacion",
+      justificacion: "regalo",
+      notaOrigenId: pedido.id,
+    });
+
+    await request(app).post("/api/pago").send({ id: pedido.id, monto: 1000, metodo: "EFECTIVO" });
+
+    const listado = (await request(app).get("/api/notas")).body.notas;
+    const b = listado.find((n) => n.id === bonif.id);
+    assert.ok(b.deliveredAt, "debe estar liberada");
+    assert.strictEqual(b.statusCredito, "LIQUIDADO", "una bonificación entregada nunca es deuda real — no debe verse como EN_PLAZO/VENCIDO");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
 test("POST /api/notas/:id/vincular-origen vincula una bonificación sin notaOrigenId y la libera si el origen ya está liquidado", async () => {
   const { app, tmpDir, setPdfText } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 1000.00" });
   try {
@@ -104,7 +126,6 @@ test("GET /api/kpis excluye bonificaciones/reposiciones de totalCobrable/totalCo
     const kpis = (await request(app).get("/api/kpis")).body;
     assert.strictEqual(kpis.totalCobrable, 1000);
     assert.strictEqual(kpis.totalCobrado, 1000);
-    // La bonificación ya se liberó (deliveredAt) porque el pedido llegó a saldo 0 → cuenta en gastoBonificaciones
     assert.strictEqual(kpis.gastoBonificaciones, 200);
     assert.strictEqual(kpis.gastoReposiciones, 0);
   } finally {
@@ -112,7 +133,7 @@ test("GET /api/kpis excluye bonificaciones/reposiciones de totalCobrable/totalCo
   }
 });
 
-test("GET /api/kpis no cuenta gasto de bonificación aún no liberada (pedido de origen sin liquidar)", async () => {
+test("GET /api/kpis cuenta el gasto de bonificación desde que se captura, sin esperar a que se libere el pedido de origen (decisión Netie 2026-07-12: el gasto ya ocurrió al regalar el producto)", async () => {
   const { app, tmpDir, setPdfText } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 1000.00" });
   try {
     const pedido = await crearNota(app);
@@ -120,7 +141,7 @@ test("GET /api/kpis no cuenta gasto de bonificación aún no liberada (pedido de
     await crearNota(app, { tipo: "bonificacion", justificacion: "regalo", notaOrigenId: pedido.id });
 
     const kpis = (await request(app).get("/api/kpis")).body;
-    assert.strictEqual(kpis.gastoBonificaciones, 0, "el gasto no es real hasta que se libera");
+    assert.strictEqual(kpis.gastoBonificaciones, 200, "el gasto se materializa al regalar el producto, no al liberar el pedido de origen");
   } finally {
     cleanupTestServer(tmpDir);
   }

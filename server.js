@@ -301,6 +301,9 @@ function computeCredito(nota, now = new Date()) {
 
   if (!deliveredAt && nota.tipo && nota.tipo !== "pedido") {
     statusCredito = "PENDIENTE_LIQUIDACION_ORIGEN";
+  } else if (deliveredAt && nota.tipo && nota.tipo !== "pedido") {
+    // Un regalo/reposición entregado nunca es deuda real — no hay nada que cobrar.
+    statusCredito = "LIQUIDADO";
   } else if (deliveredAt) {
     if (saldo === 0 && total != null) {
       statusCredito = "LIQUIDADO";
@@ -733,11 +736,11 @@ app.get("/api/kpis", (req, res) => {
   const utilidadCobrada = Math.max(utilidadCobradaBruta - totalComisiones, 0);
   const utilidadPorCobrar = totalSaldo * MARGIN;
 
-  // Gasto real: solo cuenta cuando ya se liberó (deliveredAt) — antes es intención, no gasto materializado.
+  // Gasto real: cuenta desde que se captura la nota — el gasto ya ocurrió al regalar/reponer
+  // el producto, no cuando se libera el pedido de origen (decisión Netie 2026-07-12).
   let gastoBonificaciones = 0;
   let gastoReposiciones = 0;
   for (const n of notas) {
-    if (!n.deliveredAt) continue;
     const total = typeof n.total === "number" && Number.isFinite(n.total) ? n.total : 0;
     if (n.tipo === "bonificacion") gastoBonificaciones += total;
     if (n.tipo === "reposicion") gastoReposiciones += total;

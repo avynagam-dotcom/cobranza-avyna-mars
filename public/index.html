@@ -1140,7 +1140,10 @@
       if (s === "VENCIDO") return { text: "Vencido", dot: "sRed", clickable: false };
       if (s === "POR_VENCER") return { text: "Por vencer", dot: "sGold", clickable: false };
       if (s === "EN_PLAZO") return { text: "En plazo", dot: "sGreen", clickable: false };
-      if (s === "PENDIENTE_LIQUIDACION_ORIGEN") return { text: "Espera liquidación de origen", dot: "sGold", clickable: false };
+      if (s === "PENDIENTE_LIQUIDACION_ORIGEN") {
+        const label = n.tipo === "reposicion" ? "🔄 Reposición pendiente" : "🎁 Bonificación pendiente";
+        return { text: label, dot: "sGold", clickable: false };
+      }
       return { text: "Pre-entrega", dot: "sGold", clickable: true };
     }
 

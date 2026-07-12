@@ -1,5 +1,11 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (fix crítico: notas borradas se resucitaban invisibles)
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (decisión de negocio: gasto en bonificaciones cuenta desde captura)
+
+---
+
+## Sesión 2026-07-12 (3) — Decisión de negocio resuelta: gasto en bonificaciones/reposiciones cuenta desde que se captura
+
+Réplica exacta del cambio en `cobranza-avyna-backend`. Decisión de Netie: el gasto se materializa al regalar/reponer el producto, no cuando se libera. `gastoBonificaciones`/`gastoReposiciones` ya no filtran por `deliveredAt`; una bonif/repo liberada siempre es `statusCredito: "LIQUIDADO"`; el label de `PENDIENTE_LIQUIDACION_ORIGEN` ahora dice "🎁 Bonificación pendiente" / "🔄 Reposición pendiente". 24/24 tests en verde.
 
 ---
 
