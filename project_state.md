@@ -1,5 +1,15 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (revert de diseño: bonif/repo se marcan entregadas manualmente + buscador de origen reemplazado por datalist)
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (fix: gasto en bonificaciones usaba el valor de la nota en vez del costo real)
+
+---
+
+## Sesión 2026-07-12 (7) — Gasto en bonificaciones calculaba mal: usaba el total de la nota, no el costo real
+
+**Reportado por Netie:** el KPI "Gasto en bonificaciones" mostraba el 100% del valor impreso en la nota. Su costo real normalmente es 60% de ese valor — nunca el 100% — y actualmente (penalización temporal de proveedor) es 70%.
+
+**Fix:** nueva constante `BONIF_COST_FACTOR_PCT` (env var, mismo patrón que `MARGIN_PCT` ya existente en el código) — default `0.7` (la tarifa vigente ahora). `gastoBonificaciones = total * BONIF_COST_FACTOR`. Netie ajusta el valor él mismo en Render cuando cambie la tarifa, sin pedir redeploy. **Decisión de scope (no confirmada explícitamente por Netie, aplicar con criterio):** reposiciones se dejaron al 100% del valor de la nota — reponen producto ya vendido a costo real, no llevan el descuento de proveedor de una bonificación. Si esto está mal, avisar para corregir.
+
+TDD: 3 tests actualizados/nuevos (factor aplicado, configurable por env var, reposiciones sin cambio), 31/31 en verde. Replicado idéntico en `cobranza-avyna-backend`.
 
 ---
 

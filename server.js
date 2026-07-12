@@ -777,11 +777,20 @@ app.get("/api/kpis", (req, res) => {
 
   // Gasto real: cuenta desde que se captura la nota — el gasto ya ocurrió al regalar/reponer
   // el producto, no cuando se libera el pedido de origen (decisión Netie 2026-07-12).
+  //
+  // Una bonificación NO le cuesta a Avyna el total impreso en la nota (ese es el valor
+  // al público) — le cuesta un % de ese total, el costo real del proveedor. Normalmente
+  // 60%, pero cambia por penalizaciones de temporada (ej. castigo de proveedor jul-dic
+  // 2026: sube a 70%). Configurable vía env var BONIF_COST_FACTOR_PCT en Render — Netie
+  // lo ajusta él mismo sin pedir redeploy cuando cambie la tarifa.
+  // Reposiciones SÍ cuentan al 100%: reponen producto ya vendido a costo real, no llevan
+  // el descuento de proveedor de una bonificación.
+  const BONIF_COST_FACTOR = parseFloat(process.env.BONIF_COST_FACTOR_PCT || '0.7');
   let gastoBonificaciones = 0;
   let gastoReposiciones = 0;
   for (const n of notas) {
     const total = typeof n.total === "number" && Number.isFinite(n.total) ? n.total : 0;
-    if (n.tipo === "bonificacion") gastoBonificaciones += total;
+    if (n.tipo === "bonificacion") gastoBonificaciones += total * BONIF_COST_FACTOR;
     if (n.tipo === "reposicion") gastoReposiciones += total;
   }
 

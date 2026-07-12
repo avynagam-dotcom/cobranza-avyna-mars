@@ -128,7 +128,7 @@ test("GET /api/kpis excluye bonificaciones/reposiciones de totalCobrable/totalCo
     const kpis = (await request(app).get("/api/kpis")).body;
     assert.strictEqual(kpis.totalCobrable, 1000);
     assert.strictEqual(kpis.totalCobrado, 1000);
-    assert.strictEqual(kpis.gastoBonificaciones, 200);
+    assert.strictEqual(kpis.gastoBonificaciones, 140, "200 * 0.7 (costo real a Avyna, no el valor impreso en la nota)");
     assert.strictEqual(kpis.gastoReposiciones, 0);
   } finally {
     cleanupTestServer(tmpDir);
@@ -143,8 +143,29 @@ test("GET /api/kpis cuenta el gasto de bonificación desde que se captura, sin e
     await crearNota(app, { tipo: "bonificacion", justificacion: "regalo", notaOrigenId: pedido.id });
 
     const kpis = (await request(app).get("/api/kpis")).body;
-    assert.strictEqual(kpis.gastoBonificaciones, 200, "el gasto se materializa al regalar el producto, no al liberar el pedido de origen");
+    assert.strictEqual(kpis.gastoBonificaciones, 140, "el gasto se materializa al regalar el producto, no al liberar el pedido de origen; 200 * 0.7");
   } finally {
     cleanupTestServer(tmpDir);
+  }
+});
+
+test("GET /api/kpis aplica BONIF_COST_FACTOR_PCT al costo real de una bonificación (no el valor impreso en la nota) y es configurable por env var — decisión Netie 2026-07-12: a Avyna le cuesta 60-70% del total de la nota, no el 100%; reposiciones sí cuentan al 100% (reponen producto ya vendido, no un regalo con descuento de proveedor)", async () => {
+  const prevFactor = process.env.BONIF_COST_FACTOR_PCT;
+  process.env.BONIF_COST_FACTOR_PCT = "0.6";
+  const { app, tmpDir, setPdfText } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 1000.00" });
+  try {
+    const pedido = await crearNota(app);
+    setPdfText("CLIENTE: Ana Test\nTOTAL: 300.00");
+    await crearNota(app, { tipo: "bonificacion", justificacion: "regalo", notaOrigenId: pedido.id });
+    setPdfText("CLIENTE: Ana Test\nTOTAL: 100.00");
+    await crearNota(app, { tipo: "reposicion", justificacion: "reposicion", notaOrigenId: pedido.id });
+
+    const kpis = (await request(app).get("/api/kpis")).body;
+    assert.strictEqual(kpis.gastoBonificaciones, 180, "300 * 0.6, no el total completo de la nota");
+    assert.strictEqual(kpis.gastoReposiciones, 100, "reposiciones cuentan al 100%, no llevan el descuento de proveedor de una bonificación");
+  } finally {
+    cleanupTestServer(tmpDir);
+    if (prevFactor === undefined) delete process.env.BONIF_COST_FACTOR_PCT;
+    else process.env.BONIF_COST_FACTOR_PCT = prevFactor;
   }
 });
