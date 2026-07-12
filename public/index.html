@@ -757,10 +757,8 @@
         <option value="reposicion">Reposición</option>
       </select>
       <input id="justificacionInput" type="text" placeholder="Justificación (obligatoria)" style="display:none" />
-      <input id="origenSearch" type="text" placeholder="Buscar pedido por cliente..." style="display:none" />
-      <select id="notaOrigenIdInput" style="display:none">
-        <option value="">Sin pedido de origen (opcional)</option>
-      </select>
+      <input id="notaOrigenIdInput" type="text" list="origenDatalist" placeholder="Sin pedido de origen (opcional) — escribe para buscar" autocomplete="off" style="display:none" />
+      <datalist id="origenDatalist"></datalist>
       <button id="pickBtn" class="btn" type="button">Seleccionar PDF</button>
       <input id="fileInput" type="file" accept="application/pdf" />
     </div>
@@ -872,10 +870,7 @@
         <option value="reposicion">Reposición</option>
       </select>
       <input id="justificacionFix" type="text" placeholder="Justificación (obligatoria para bonif/repo)" style="display:none; margin-top:8px" />
-      <input id="origenSearchFix" type="text" placeholder="Buscar pedido por cliente..." style="display:none; margin-top:8px" />
-      <select id="origenFix" style="display:none; margin-top:8px">
-        <option value="">Sin pedido de origen (opcional)</option>
-      </select>
+      <input id="origenFix" type="text" list="origenDatalist" placeholder="Sin pedido de origen (opcional) — escribe para buscar" autocomplete="off" style="display:none; margin-top:8px" />
 
       <div class="row">
         <button id="cancelTipoFix" class="btn2" type="button">Cancelar</button>
@@ -937,29 +932,37 @@
     const tipoNotaSelect = document.getElementById("tipoNota");
     const justificacionInput = document.getElementById("justificacionInput");
     const notaOrigenIdInput = document.getElementById("notaOrigenIdInput");
-    const origenSearch = document.getElementById("origenSearch");
-    function populateOrigenSelect() {
-      const prev = notaOrigenIdInput.value;
-      const q = (origenSearch.value || "").trim().toLowerCase();
-      const pedidos = (window.__allNotas || [])
-        .filter(n => (n.tipo || "pedido") === "pedido")
-        .filter(n => !q || String(n.cliente || n.originalName || "").toLowerCase().includes(q));
-      notaOrigenIdInput.innerHTML = `<option value="">Sin pedido de origen (opcional)</option>` +
-        pedidos.map(n => {
+
+    // Combo de búsqueda nativo (datalist) para elegir un pedido de origen.
+    // Reemplaza el viejo select+input-filtro que no filtraba nada visible al usuario.
+    function createOrigenPicker(inputEl, datalistEl) {
+      let labelToId = new Map();
+      function populate() {
+        const pedidos = (window.__allNotas || []).filter(n => (n.tipo || "pedido") === "pedido");
+        labelToId = new Map();
+        datalistEl.innerHTML = pedidos.map(n => {
           const label = `${n.cliente || n.originalName || "Sin cliente"} — ${money(n.total)}`;
-          return `<option value="${n.id}">${escapeHtml(label)}</option>`;
+          labelToId.set(label, n.id);
+          return `<option value="${escapeHtml(label)}"></option>`;
         }).join("");
-      notaOrigenIdInput.value = prev && pedidos.some(n => n.id === prev) ? prev : "";
+      }
+      function resolveId() {
+        return labelToId.get((inputEl.value || "").trim()) || "";
+      }
+      function setById(id) {
+        const n = (window.__allNotas || []).find(x => x.id === id);
+        inputEl.value = n ? `${n.cliente || n.originalName || "Sin cliente"} — ${money(n.total)}` : "";
+      }
+      return { populate, resolveId, setById };
     }
-    origenSearch.addEventListener("input", populateOrigenSelect);
+    const origenPicker = createOrigenPicker(notaOrigenIdInput, document.getElementById("origenDatalist"));
 
     tipoNotaSelect.addEventListener("change", () => {
       const show = tipoNotaSelect.value !== "pedido";
       justificacionInput.style.display = show ? "" : "none";
-      origenSearch.style.display = show ? "" : "none";
       notaOrigenIdInput.style.display = show ? "" : "none";
-      if (show) populateOrigenSelect();
-      if (!show) { justificacionInput.value = ""; origenSearch.value = ""; notaOrigenIdInput.value = ""; }
+      if (show) origenPicker.populate();
+      if (!show) { justificacionInput.value = ""; notaOrigenIdInput.value = ""; }
     });
 
     // Vencidos box
@@ -1171,7 +1174,7 @@
       if (s === "EN_PLAZO") return { text: "En plazo", dot: "sGreen", clickable: false };
       if (s === "PENDIENTE_LIQUIDACION_ORIGEN") {
         const label = n.tipo === "reposicion" ? "🔄 Reposición pendiente" : "🎁 Bonificación pendiente";
-        return { text: label, dot: "sGold", clickable: false, fixable: true };
+        return { text: label, dot: "sGold", clickable: true };
       }
       return { text: "Pre-entrega", dot: "sGold", clickable: true };
     }
@@ -1209,15 +1212,14 @@
         const st = statusLabel(n);
         const due = n.dueAt ? new Date(n.dueAt).toLocaleDateString("es-MX") : null;
         const clickable = st.clickable && !readonly;
-        const fixable = st.fixable && !readonly;
 
         const statusHtml = `
           <div>
-            <div class="statusPill ${clickable || fixable ? "clickable" : ""}" data-ent="${clickable ? n.id : ""}" data-fixtipo="${fixable ? n.id : ""}">
+            <div class="statusPill ${clickable ? "clickable" : ""}" data-ent="${clickable ? n.id : ""}">
               <span class="sDot ${st.dot}"></span>
               ${escapeHtml(st.text)}
             </div>
-            ${due ? `<div class="statusHint">Vence: ${escapeHtml(due)}</div>` : (clickable ? `<div class="statusHint">Click para marcar entregado</div>` : (fixable ? `<div class="statusHint">Click para corregir clasificación</div>` : ``))}
+            ${due ? `<div class="statusHint">Vence: ${escapeHtml(due)}</div>` : (clickable ? `<div class="statusHint">Click para marcar entregado</div>` : ``)}
           </div>
         `;
 
@@ -1442,7 +1444,7 @@
         }));
 
         window.__allNotas = notas;
-        if (notaOrigenIdInput.style.display !== "none") populateOrigenSelect();
+        if (notaOrigenIdInput.style.display !== "none") origenPicker.populate();
         countAll.textContent = String(notas.length);
 
         const current = notas.filter(x => String(x.batchKey || "") === String(window.__batchKey || ""));
@@ -1463,7 +1465,7 @@
     async function uploadFile(file) {
       const tipo = tipoNotaSelect.value || "pedido";
       const justificacion = (justificacionInput.value || "").trim();
-      const notaOrigenId = (notaOrigenIdInput.value || "").trim();
+      const notaOrigenId = origenPicker.resolveId();
 
       if (tipo !== "pedido" && !justificacion) {
         setMsg("err", "Debes indicar la justificación para bonificación/reposición.");
@@ -1490,10 +1492,8 @@
         setMsg("ok", "PDF recibido correctamente ✓");
         tipoNotaSelect.value = "pedido";
         justificacionInput.value = "";
-        origenSearch.value = "";
         notaOrigenIdInput.value = "";
         justificacionInput.style.display = "none";
-        origenSearch.style.display = "none";
         notaOrigenIdInput.style.display = "none";
       } else {
         if (j && j.duplicate) setMsg("err", "Nota duplicada");
@@ -1558,12 +1558,20 @@
       deliveringId = id;
       const n = (window.__allNotas || []).find(x => String(x.id) === String(id));
       const label = n ? (n.cliente || n.originalName || "") : "";
-      entDesc.innerHTML = `
-        <div style="margin-top:6px">
-          Se marcará como <b>ENTREGADO</b>: <b>${escapeHtml(label)}</b><br/>
-          Inicia el crédito y fija vencimiento en <b>15 días</b> (contando el día de entrega).
-        </div>
-      `;
+      const esBonifRepo = n && n.tipo && n.tipo !== "pedido";
+      entDesc.innerHTML = esBonifRepo
+        ? `
+          <div style="margin-top:6px">
+            Se marcará como <b>ENTREGADA</b> la ${n.tipo === "reposicion" ? "reposición" : "bonificación"} de: <b>${escapeHtml(label)}</b><br/>
+            No genera ventana de cobranza — es un regalo/reposición, no hay nada que cobrar.
+          </div>
+        `
+        : `
+          <div style="margin-top:6px">
+            Se marcará como <b>ENTREGADO</b>: <b>${escapeHtml(label)}</b><br/>
+            Inicia el crédito y fija vencimiento en <b>15 días</b> (contando el día de entrega).
+          </div>
+        `;
       overlayEnt.classList.add("show");
     }
     function closeEnt() {
@@ -1591,33 +1599,17 @@
     const tipoClient = document.getElementById("tipoClient");
     const tipoFix = document.getElementById("tipoFix");
     const justificacionFix = document.getElementById("justificacionFix");
-    const origenSearchFix = document.getElementById("origenSearchFix");
     const origenFix = document.getElementById("origenFix");
     const cancelTipoFix = document.getElementById("cancelTipoFix");
     const saveTipoFix = document.getElementById("saveTipoFix");
+    const origenPickerFix = createOrigenPicker(origenFix, document.getElementById("origenDatalist"));
     let fixingId = null;
-
-    function populateOrigenFix() {
-      const prev = origenFix.value;
-      const q = (origenSearchFix.value || "").trim().toLowerCase();
-      const pedidos = (window.__allNotas || [])
-        .filter(n => (n.tipo || "pedido") === "pedido")
-        .filter(n => !q || String(n.cliente || n.originalName || "").toLowerCase().includes(q));
-      origenFix.innerHTML = `<option value="">Sin pedido de origen (opcional)</option>` +
-        pedidos.map(n => {
-          const label = `${n.cliente || n.originalName || "Sin cliente"} — ${money(n.total)}`;
-          return `<option value="${n.id}">${escapeHtml(label)}</option>`;
-        }).join("");
-      origenFix.value = prev && pedidos.some(n => n.id === prev) ? prev : "";
-    }
-    origenSearchFix.addEventListener("input", populateOrigenFix);
 
     function toggleTipoFixFields() {
       const show = tipoFix.value !== "pedido";
       justificacionFix.style.display = show ? "" : "none";
-      origenSearchFix.style.display = show ? "" : "none";
       origenFix.style.display = show ? "" : "none";
-      if (show) populateOrigenFix();
+      if (show) origenPickerFix.populate();
     }
     tipoFix.addEventListener("change", toggleTipoFixFields);
 
@@ -1628,9 +1620,8 @@
       tipoClient.textContent = n.cliente || n.originalName || "";
       tipoFix.value = n.tipo || "pedido";
       justificacionFix.value = n.justificacion || "";
-      origenSearchFix.value = "";
       toggleTipoFixFields();
-      if (n.notaOrigenId) origenFix.value = n.notaOrigenId;
+      if (n.notaOrigenId) origenPickerFix.setById(n.notaOrigenId);
       overlayTipo.classList.add("show");
     }
     function closeTipoFix() {
@@ -1644,7 +1635,7 @@
       if (!fixingId) return;
       const tipo = tipoFix.value || "pedido";
       const justificacion = (justificacionFix.value || "").trim();
-      const notaOrigenId = (origenFix.value || "").trim();
+      const notaOrigenId = origenPickerFix.resolveId();
 
       if (tipo !== "pedido" && !justificacion) {
         setMsg("err", "Debes indicar la justificación para bonificación/reposición.");

@@ -1,5 +1,11 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (fix: píldora "Bonificación pendiente" no clickeable + uploader se salía del recuadro)
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (revert de diseño: bonif/repo se marcan entregadas manualmente + buscador de origen reemplazado por datalist)
+
+---
+
+## Sesión 2026-07-12 (6) — Corrección de rumbo: el fix anterior (sesión 5) estaba mal enfocado
+
+Réplica exacta de `cobranza-avyna-backend`. Netie: el click en bonificación debía marcar entregado (caso común, diario), no abrir corrección de clasificación (caso raro). `POST /api/entregar` ahora acepta cualquier tipo, sin `dueAt` para bonif/repo. Buscador de origen (texto filtrando un select cerrado, invisible) reemplazado por `<input list="datalist">` nativo con sugerencias en vivo. 30/30 tests en verde, verificado en navegador real. Ver detalle completo de la lección en `project_state.md` de backend.
 
 ---
 

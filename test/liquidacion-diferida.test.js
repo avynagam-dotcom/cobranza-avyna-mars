@@ -16,7 +16,7 @@ async function crearNota(app, overrides = {}) {
   return res.body.nota;
 }
 
-test("POST /api/entregar rechaza notas tipo bonificacion/reposicion (400)", async () => {
+test("POST /api/entregar permite marcar bonificación/reposición como entregada manualmente (decisión Netie 2026-07-12: necesita saber si el regalo se entregó físicamente, no depender solo de la liberación automática)", async () => {
   const { app, tmpDir, setPdfText } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 1000.00" });
   try {
     const pedido = await crearNota(app);
@@ -28,8 +28,10 @@ test("POST /api/entregar rechaza notas tipo bonificacion/reposicion (400)", asyn
     });
 
     const res = await request(app).post("/api/entregar").send({ id: bonif.id });
-    assert.strictEqual(res.status, 400);
-    assert.match(res.body.message, /autom[aá]tica/i);
+    assert.strictEqual(res.status, 200);
+    assert.ok(res.body.nota.deliveredAt, "debe quedar marcada como entregada");
+    assert.strictEqual(res.body.nota.dueAt, null, "una bonificación entregada no tiene ventana de cobranza");
+    assert.strictEqual(res.body.nota.statusCredito, "LIQUIDADO");
   } finally {
     cleanupTestServer(tmpDir);
   }

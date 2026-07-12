@@ -545,18 +545,13 @@ app.post("/api/entregar", (req, res) => {
 
     const n = notas[idx];
 
-    if (n.tipo && n.tipo !== "pedido") {
-      return res.status(400).json({
-        ok: false,
-        message: "Bonificaciones/reposiciones se entregan automáticamente al liquidar el pedido de origen, no manualmente.",
-      });
-    }
-
     if (!n.deliveredAt) {
       const now = new Date();
       n.deliveredAt = iso(now);
-      // ✅ 15 días (como quedamos)
-      n.dueAt = iso(addDays(now, 15));
+      // Bonif/repo son regalos/reposiciones — nunca generan ventana de cobranza.
+      // Netie necesita marcarlas manualmente cuando entrega el producto físico,
+      // sin depender de que el pedido de origen ya esté liquidado.
+      n.dueAt = (n.tipo && n.tipo !== "pedido") ? null : iso(addDays(now, 15));
     }
 
     notas[idx] = n;
