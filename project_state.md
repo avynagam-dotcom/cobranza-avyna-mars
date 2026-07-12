@@ -1,5 +1,11 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (feature: corregir clasificación de una nota ya capturada)
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (fix: píldora "Bonificación pendiente" no clickeable + uploader se salía del recuadro)
+
+---
+
+## Sesión 2026-07-12 (5) — 2 fixes de fricción real reportados en vivo por Netie
+
+Réplica exacta de `cobranza-avyna-backend`. (1) La píldora de estado "Bonificación pendiente" ahora también abre el modal de corrección (antes solo el badge junto al nombre). (2) `.uploader` con `flex-wrap` — el botón "Seleccionar PDF" se salía del recuadro al cambiar a Bonificación por los campos nuevos de la sesión anterior. Verificado en navegador real, 30/30 tests en verde.
 
 ---
 

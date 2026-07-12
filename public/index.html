@@ -172,6 +172,7 @@
       padding: 14px;
       background: rgba(255, 255, 255, .03);
       display: flex;
+      flex-wrap: wrap;
       gap: 12px;
       align-items: center;
       justify-content: space-between;
@@ -255,6 +256,8 @@
       color: #141414;
       outline: none;
       font-size: 14px;
+      min-width: 160px;
+      flex: 1 1 160px;
     }
 
     .badgeTipo {
@@ -1168,7 +1171,7 @@
       if (s === "EN_PLAZO") return { text: "En plazo", dot: "sGreen", clickable: false };
       if (s === "PENDIENTE_LIQUIDACION_ORIGEN") {
         const label = n.tipo === "reposicion" ? "🔄 Reposición pendiente" : "🎁 Bonificación pendiente";
-        return { text: label, dot: "sGold", clickable: false };
+        return { text: label, dot: "sGold", clickable: false, fixable: true };
       }
       return { text: "Pre-entrega", dot: "sGold", clickable: true };
     }
@@ -1206,14 +1209,15 @@
         const st = statusLabel(n);
         const due = n.dueAt ? new Date(n.dueAt).toLocaleDateString("es-MX") : null;
         const clickable = st.clickable && !readonly;
+        const fixable = st.fixable && !readonly;
 
         const statusHtml = `
           <div>
-            <div class="statusPill ${clickable ? "clickable" : ""}" data-ent="${clickable ? n.id : ""}">
+            <div class="statusPill ${clickable || fixable ? "clickable" : ""}" data-ent="${clickable ? n.id : ""}" data-fixtipo="${fixable ? n.id : ""}">
               <span class="sDot ${st.dot}"></span>
               ${escapeHtml(st.text)}
             </div>
-            ${due ? `<div class="statusHint">Vence: ${escapeHtml(due)}</div>` : (clickable ? `<div class="statusHint">Click para marcar entregado</div>` : ``)}
+            ${due ? `<div class="statusHint">Vence: ${escapeHtml(due)}</div>` : (clickable ? `<div class="statusHint">Click para marcar entregado</div>` : (fixable ? `<div class="statusHint">Click para corregir clasificación</div>` : ``))}
           </div>
         `;
 
@@ -1253,7 +1257,9 @@
       });
 
       tbody.querySelectorAll("[data-fixtipo]").forEach(b => {
-        b.addEventListener("click", (e) => { e.stopPropagation(); openTipoFix(b.getAttribute("data-fixtipo")); });
+        const id = b.getAttribute("data-fixtipo");
+        if (!id) return;
+        b.addEventListener("click", (e) => { e.stopPropagation(); openTipoFix(id); });
       });
     }
 
