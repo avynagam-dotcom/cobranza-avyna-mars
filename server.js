@@ -25,6 +25,21 @@ if (ADMIN_USER && ADMIN_PASS) {
   });
 }
 
+// Identifica quién hace la request a partir del usuario de Basic Auth (cada
+// instancia — mars/backend/cha/operado — corre con su propio ADMIN_USER en
+// Render, así que esto SÍ distingue quién borra qué). Sin header, "unknown".
+function getAuthUser(req) {
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Basic ')) return null;
+  try {
+    const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+    const [user] = decoded.split(':');
+    return user || null;
+  } catch {
+    return null;
+  }
+}
+
 const CARD_FEE_FACTOR = 0.0406; // 3.5% + 16% IVA (3.5 * 1.16 = 4.06%)
 const MARGIN = parseFloat(process.env.MARGIN_PCT || '0.4');
 
@@ -725,7 +740,7 @@ app.delete("/api/notas/:id", (req, res) => {
 
     const n = notas[idx];
     n.deletedAt = new Date().toISOString();
-    n.deletedBy = "unknown"; // no hay auth en el sistema hoy; hook para futuro header X-User
+    n.deletedBy = getAuthUser(req) || "unknown";
     notas[idx] = n;
     saveDB(notas);
 
@@ -770,6 +785,28 @@ app.get("/api/kpis", (req, res) => {
   const totalSaldo = Math.max(totalCobrable - totalCobrado, 0);
   const pctCobranza = totalCobrable > 0 ? totalCobrado / totalCobrable : 0;
 
+  // Pulso vivo de cartera abierta (Netie 2026-07-17): el % histórico de arriba
+  // suma TODAS las entregadas, incluidas las liquidadas hace meses — se queda
+  // pegado arriba de 90% siempre porque lo ya cobrado nunca sale de la cuenta.
+  // Esto es distinto: solo las notas que TODAVÍA tienen saldo pendiente. Una
+  // nota sale de este número en cuanto se liquida, así que refleja el presente,
+  // no el arrastre histórico. El histórico se conserva tal cual, sin tocar.
+  let totalCobrableAbierto = 0;
+  let totalCobradoAbierto = 0;
+  let notasAbiertasCount = 0;
+  for (const n of entregadas) {
+    const total = typeof n.total === "number" && Number.isFinite(n.total) ? n.total : 0;
+    const pagado = typeof n.pagado === "number" && Number.isFinite(n.pagado) ? n.pagado : 0;
+    const saldo = Math.max(total - pagado, 0);
+    if (saldo <= 0) continue; // ya liquidada, no es cartera abierta
+    totalCobrableAbierto += total;
+    totalCobradoAbierto += Math.min(pagado, total);
+    notasAbiertasCount += 1;
+  }
+  const totalSaldoAbierto = Math.max(totalCobrableAbierto - totalCobradoAbierto, 0);
+  // Sin cartera abierta = nada pendiente = 100%, no 0/0.
+  const pctCobranzaAbierta = totalCobrableAbierto > 0 ? totalCobradoAbierto / totalCobrableAbierto : 1;
+
   // Utilidad NETA (restando comisiones bancarias del margen de utilidad bruta)
   const utilidadCobradaBruta = totalCobrado * MARGIN;
   const utilidadCobrada = Math.max(utilidadCobradaBruta - totalComisiones, 0);
@@ -800,6 +837,11 @@ app.get("/api/kpis", (req, res) => {
     totalCobrado,
     totalSaldo,
     pctCobranza,
+    totalCobrableAbierto,
+    totalCobradoAbierto,
+    totalSaldoAbierto,
+    notasAbiertasCount,
+    pctCobranzaAbierta,
     utilidadCobrada,
     utilidadPorCobrar,
     totalComisiones: Number(totalComisiones.toFixed(2)),

@@ -688,11 +688,20 @@
     <div class="kpiWrap">
       <div class="kpiGrid">
         <div class="kpiCard">
-          <div class="kpiTitle">% Cobranza</div>
+          <div class="kpiTitle">% Cobranza (histórico)</div>
           <div class="kpiValue" id="kpiPct">—</div>
           <div class="kpiSub" id="kpiPctSub">—</div>
           <div class="bar">
             <div id="kpiBar" class="barGrad"></div>
+          </div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiTitle">📡 Cartera abierta (pulso vivo)</div>
+          <div class="kpiValue" id="kpiPctAbierta">—</div>
+          <div class="kpiSub" id="kpiPctAbiertaSub">—</div>
+          <div class="bar">
+            <div id="kpiBarAbierta" class="barGrad"></div>
           </div>
         </div>
 
@@ -913,6 +922,9 @@
     // KPI
     const kpiPct = document.getElementById("kpiPct");
     const kpiPctSub = document.getElementById("kpiPctSub");
+    const kpiPctAbierta = document.getElementById("kpiPctAbierta");
+    const kpiPctAbiertaSub = document.getElementById("kpiPctAbiertaSub");
+    const kpiBarAbierta = document.getElementById("kpiBarAbierta");
     const kpiCobrado = document.getElementById("kpiCobrado");
     const kpiPorCobrar = document.getElementById("kpiPorCobrar");
     const kpiUtilCobrada = document.getElementById("kpiUtilCobrada");
@@ -1396,6 +1408,17 @@
         const pct = (j.pctCobranza || 0);
         kpiPct.textContent = (pct * 100).toFixed(1) + "%";
         kpiPctSub.textContent = `${money(j.totalCobrado || 0)} / ${money(j.totalCobrable || 0)}`;
+
+        // Pulso vivo: solo notas con saldo pendiente (Netie 2026-07-17) — el
+        // histórico de arriba arrastra todo lo ya liquidado y se queda pegado
+        // arriba de 90% siempre; esta se encoge sola en cuanto se cobra una nota.
+        const pctAbierta = (j.pctCobranzaAbierta ?? 1);
+        kpiPctAbierta.textContent = (pctAbierta * 100).toFixed(1) + "%";
+        kpiPctAbiertaSub.textContent = (j.notasAbiertasCount || 0) > 0
+          ? `${money(j.totalCobradoAbierto || 0)} / ${money(j.totalCobrableAbierto || 0)} · ${j.notasAbiertasCount} nota(s) sin liquidar`
+          : "Sin notas pendientes de liquidar";
+        const wAbierta = Math.max(0, Math.min(100, Math.round(pctAbierta * 100)));
+        kpiBarAbierta.style.width = wAbierta + "%";
 
         kpiCobrado.textContent = money(j.totalCobrado || 0);
         kpiPorCobrar.textContent = money(j.totalSaldo || 0);

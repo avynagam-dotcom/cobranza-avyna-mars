@@ -33,10 +33,25 @@ test("DELETE /api/notas/:id no borra el PDF físico", async () => {
   }
 });
 
-test("DELETE /api/notas/:id marca deletedAt y deletedBy", async () => {
-  const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
+function escribirNotaDirecta(overrides = {}) {
+  const dbFile = path.join(process.env.DATA_DIR, "notas.json");
+  const nota = {
+    id: "nota-directa-1",
+    cliente: "Ana Test",
+    total: 500,
+    pagado: 0,
+    tipo: "pedido",
+    deliveredAt: new Date().toISOString(),
+    ...overrides,
+  };
+  fs.writeFileSync(dbFile, JSON.stringify([nota], null, 2));
+  return nota;
+}
+
+test("DELETE /api/notas/:id marca deletedAt y, sin credenciales en la request, deletedBy queda 'unknown'", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
   try {
-    const nota = await crearNota(app);
+    const nota = escribirNotaDirecta();
     await request(app).delete(`/api/notas/${nota.id}`);
 
     const dataRaw = fs.readFileSync(path.join(process.env.DATA_DIR, "notas.json"), "utf8");
@@ -46,6 +61,26 @@ test("DELETE /api/notas/:id marca deletedAt y deletedBy", async () => {
     assert.ok(borrada, "la nota debe seguir existiendo en notas.json");
     assert.ok(borrada.deletedAt, "deletedAt debe estar seteado");
     assert.strictEqual(borrada.deletedBy, "unknown");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+// Origen 2026-07-17: conciliación detectó notas borradas en mars con
+// deletedBy="unknown" — sin auth no había forma de saber quién borró qué.
+// Cada instancia corre con su propio ADMIN_USER en Render, así que el usuario
+// autenticado por Basic Auth SÍ identifica quién hizo la request.
+test("DELETE /api/notas/:id usa el usuario de Basic Auth como deletedBy cuando la request lo trae", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta({ id: "nota-directa-2" });
+    await request(app).delete(`/api/notas/${nota.id}`).auth("mar", "loquesea");
+
+    const dataRaw = fs.readFileSync(path.join(process.env.DATA_DIR, "notas.json"), "utf8");
+    const notas = JSON.parse(dataRaw);
+    const borrada = notas.find((n) => n.id === nota.id);
+
+    assert.strictEqual(borrada.deletedBy, "mar");
   } finally {
     cleanupTestServer(tmpDir);
   }
