@@ -566,7 +566,7 @@ app.post("/api/entregar", (req, res) => {
       // Bonif/repo son regalos/reposiciones — nunca generan ventana de cobranza.
       // Netie necesita marcarlas manualmente cuando entrega el producto físico,
       // sin depender de que el pedido de origen ya esté liquidado.
-      n.dueAt = (n.tipo && n.tipo !== "pedido") ? null : iso(addDays(now, 15));
+      n.dueAt = (n.tipo && n.tipo !== "pedido") ? null : iso(addDays(now, 14));
     }
 
     notas[idx] = n;
