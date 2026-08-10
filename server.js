@@ -729,6 +729,41 @@ app.post("/api/notas/:id/corregir-tipo", (req, res) => {
 });
 
 // ----- API: eliminar nota (soft-delete auditado — el PDF y el registro se conservan)
+// ----- API: corregir el método de un pago YA registrado (no expuesto en la
+// UI pública — solo para correcciones puntuales de captura, ej. un pago
+// marcado "efectivo" que en realidad fue transferencia). No es un endpoint
+// que Mar pueda auto-usar desde su interfaz; se llama a mano/por script.
+app.post("/api/notas/:id/corregir-metodo-pago", (req, res) => {
+  try {
+    const { id } = req.params;
+    const { pagoFecha, metodoNuevo } = req.body || {};
+    const METODOS_VALIDOS = ["efectivo", "transferencia", "tarjeta"];
+
+    if (!METODOS_VALIDOS.includes(metodoNuevo)) {
+      return res.status(400).json({ ok: false, message: "Método inválido" });
+    }
+
+    const notas = loadDB();
+    const idx = notas.findIndex((n) => String(n.id) === String(id));
+    if (idx === -1) return res.status(404).json({ ok: false, message: "Nota no encontrada" });
+
+    const n = notas[idx];
+    const pago = (n.pagos || []).find((p) => p.fecha === pagoFecha);
+    if (!pago) return res.status(404).json({ ok: false, message: "Pago no encontrado en esta nota" });
+
+    pago.metodo = metodoNuevo;
+    pago.comision = metodoNuevo === "tarjeta" ? Number((pago.monto * CARD_FEE_FACTOR).toFixed(2)) : 0;
+
+    notas[idx] = n;
+    saveDB(notas);
+
+    return res.json({ ok: true, nota: { ...n, ...computeCredito(n) } });
+  } catch (e) {
+    console.error("CORREGIR-METODO-PAGO ERROR:", e);
+    return res.status(500).json({ ok: false, message: "Error al corregir método de pago" });
+  }
+});
+
 app.delete("/api/notas/:id", (req, res) => {
   try {
     const { id } = req.params;
