@@ -326,8 +326,10 @@ function computeCredito(nota, now = new Date()) {
       const msNow = now.getTime();
       const msDue = dueAt.getTime();
       const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+      const mxDateStr = (d) => new Date(d.getTime() - 6 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-      if (msNow >= msDue) statusCredito = "VENCIDO";
+      if (mxDateStr(now) === mxDateStr(dueAt)) statusCredito = "COBRABLE_HOY";
+      else if (msNow >= msDue) statusCredito = "VENCIDO";
       else if (msNow >= msDue - threeDaysMs) statusCredito = "POR_VENCER";
       else statusCredito = "EN_PLAZO";
     } else {
@@ -793,6 +795,7 @@ app.delete("/api/notas/:id", (req, res) => {
 
 // ----- KPIs globales (SOLO ENTREGADAS) ✅ consistencia y utilidades
 app.get("/api/kpis", (req, res) => {
+  const now = new Date();
   const notas = loadDB().filter((n) => !n.deletedAt);
   // Solo pedidos cuentan como "cobrable"/"cobrado" — bonif/repo nunca generan ingreso.
   const entregadas = notas.filter((n) => !!n.deliveredAt && n.tipo === "pedido");
@@ -842,6 +845,46 @@ app.get("/api/kpis", (req, res) => {
   // Sin cartera abierta = nada pendiente = 100%, no 0/0.
   const pctCobranzaAbierta = totalCobrableAbierto > 0 ? totalCobradoAbierto / totalCobrableAbierto : 1;
 
+  // "Monto exacto de lo que YA debería estar cobrado y no está" (Netie
+  // 2026-08-02, tras cuestionar el 36.4% de pctCobranzaAbierta): ese % mezcla
+  // saldo TODAVÍA EN PLAZO (dentro de los 14 días de crédito) con saldo
+  // VENCIDO real — una nota entregada hace 2 días cuenta igual que una de
+  // hace 2 meses. Aquí se separa por antigüedad de la obligación pendiente:
+  //   obligado = total si el 2do tramo (dueAt) ya venció, si no 0.5*total
+  //   (solo debe el primer 50% contra-entrega).
+  //   debido = max(obligado - pagado, 0).
+  //   antigüedad = desde dueAt si ya venció, si no desde deliveredAt.
+  //   <=30d = urgente (se está cayendo del ritmo). >30d = vieja/gota a gota
+  //   (cartera de riesgo, no se persigue — mismo espíritu que "vencido viejo"
+  //   en cobrable.py, pero incluye también fallas del primer 50%).
+  // Puerto 1:1 de calcula_debido_urgente en money-coach/engine.py.
+  const CORTE_DIAS_URGENTE = 30;
+  let montoDebidoUrgente = 0;
+  let montoCarteraVieja = 0;
+  for (const n of entregadas) {
+    const total = typeof n.total === "number" && Number.isFinite(n.total) ? n.total : 0;
+    const pagado = typeof n.pagado === "number" && Number.isFinite(n.pagado) ? n.pagado : 0;
+    const deliveredAt = n.deliveredAt ? new Date(n.deliveredAt) : null;
+    const dueAt = n.dueAt ? new Date(n.dueAt) : null;
+    if (!deliveredAt) continue;
+    let obligado, inicio;
+    if (dueAt && now >= dueAt) {
+      obligado = total;
+      inicio = dueAt;
+    } else {
+      obligado = 0.5 * total;
+      inicio = deliveredAt;
+    }
+    const debido = Math.max(obligado - pagado, 0);
+    if (debido <= 0) continue;
+    const antiguedadDias = (now - inicio) / (24 * 60 * 60 * 1000);
+    if (antiguedadDias <= CORTE_DIAS_URGENTE) {
+      montoDebidoUrgente += debido;
+    } else {
+      montoCarteraVieja += debido;
+    }
+  }
+
   // Utilidad NETA (restando comisiones bancarias del margen de utilidad bruta)
   const utilidadCobradaBruta = totalCobrado * MARGIN;
   const utilidadCobrada = Math.max(utilidadCobradaBruta - totalComisiones, 0);
@@ -877,6 +920,8 @@ app.get("/api/kpis", (req, res) => {
     totalSaldoAbierto,
     notasAbiertasCount,
     pctCobranzaAbierta,
+    montoDebidoUrgente: Number(montoDebidoUrgente.toFixed(2)),
+    montoCarteraVieja: Number(montoCarteraVieja.toFixed(2)),
     utilidadCobrada,
     utilidadPorCobrar,
     totalComisiones: Number(totalComisiones.toFixed(2)),
@@ -896,7 +941,7 @@ app.get("/api/faltantes", (req, res) => {
     .filter((n) => (typeof n.saldo === "number" ? n.saldo > 0 : true))
     .sort((a, b) => {
       const rank = (s) =>
-        s === "VENCIDO" ? 0 : s === "POR_VENCER" ? 1 : s === "EN_PLAZO" ? 2 : 3;
+        s === "VENCIDO" ? 0 : s === "COBRABLE_HOY" ? 1 : s === "POR_VENCER" ? 2 : s === "EN_PLAZO" ? 3 : 4;
       const ra = rank(a.statusCredito);
       const rb = rank(b.statusCredito);
       if (ra !== rb) return ra - rb;

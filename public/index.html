@@ -706,6 +706,18 @@
         </div>
 
         <div class="kpiCard">
+          <div class="kpiTitle">⚠️ Debido urgente (≤30d)</div>
+          <div class="kpiValue" id="kpiDebidoUrgente">—</div>
+          <div class="kpiSub">Falló el 1er 50% o el 2do venció hace poco — se está cayendo del ritmo</div>
+        </div>
+
+        <div class="kpiCard">
+          <div class="kpiTitle">🐢 Cartera vieja (gota a gota)</div>
+          <div class="kpiValue" id="kpiCarteraVieja">—</div>
+          <div class="kpiSub">Vencido hace &gt;30d — riesgo, no se persigue como urgente</div>
+        </div>
+
+        <div class="kpiCard">
           <div class="kpiTitle">Cobrado</div>
           <div class="kpiValue" id="kpiCobrado">—</div>
           <div class="kpiSub">Pagos acumulados (solo entregadas)</div>
@@ -765,6 +777,7 @@
         <option value="bonificacion">Bonificación</option>
         <option value="reposicion">Reposición</option>
       </select>
+      <div id="hintPrecioTipo" style="display:none; font-size:12px; opacity:0.75; margin-top:4px"></div>
       <input id="justificacionInput" type="text" placeholder="Justificación (obligatoria)" style="display:none" />
       <input id="notaOrigenIdInput" type="text" list="origenDatalist" placeholder="Sin pedido de origen (opcional) — escribe para buscar" autocomplete="off" style="display:none" />
       <datalist id="origenDatalist"></datalist>
@@ -878,6 +891,7 @@
         <option value="bonificacion">Bonificación</option>
         <option value="reposicion">Reposición</option>
       </select>
+      <div id="hintPrecioFix" style="display:none; font-size:12px; opacity:0.75; margin-top:4px"></div>
       <input id="justificacionFix" type="text" placeholder="Justificación (obligatoria para bonif/repo)" style="display:none; margin-top:8px" />
       <input id="origenFix" type="text" list="origenDatalist" placeholder="Sin pedido de origen (opcional) — escribe para buscar" autocomplete="off" style="display:none; margin-top:8px" />
 
@@ -925,6 +939,8 @@
     const kpiPctAbierta = document.getElementById("kpiPctAbierta");
     const kpiPctAbiertaSub = document.getElementById("kpiPctAbiertaSub");
     const kpiBarAbierta = document.getElementById("kpiBarAbierta");
+    const kpiDebidoUrgente = document.getElementById("kpiDebidoUrgente");
+    const kpiCarteraVieja = document.getElementById("kpiCarteraVieja");
     const kpiCobrado = document.getElementById("kpiCobrado");
     const kpiPorCobrar = document.getElementById("kpiPorCobrar");
     const kpiUtilCobrada = document.getElementById("kpiUtilCobrada");
@@ -944,6 +960,12 @@
     const tipoNotaSelect = document.getElementById("tipoNota");
     const justificacionInput = document.getElementById("justificacionInput");
     const notaOrigenIdInput = document.getElementById("notaOrigenIdInput");
+    const hintPrecioTipo = document.getElementById("hintPrecioTipo");
+
+    const HINT_PRECIO = {
+      bonificacion: "💵 Escribe el precio SALÓN (venta al público) de lo que se regaló.",
+      reposicion: "💵 Escribe el precio DISTRIBUIDOR (costo real) de lo que se repuso.",
+    };
 
     // Combo de búsqueda nativo (datalist) para elegir un pedido de origen.
     // Reemplaza el viejo select+input-filtro que no filtraba nada visible al usuario.
@@ -973,6 +995,8 @@
       const show = tipoNotaSelect.value !== "pedido";
       justificacionInput.style.display = show ? "" : "none";
       notaOrigenIdInput.style.display = show ? "" : "none";
+      hintPrecioTipo.style.display = show ? "" : "none";
+      hintPrecioTipo.textContent = HINT_PRECIO[tipoNotaSelect.value] || "";
       if (show) origenPicker.populate();
       if (!show) { justificacionInput.value = ""; notaOrigenIdInput.value = ""; }
     });
@@ -1182,6 +1206,7 @@
       const s = (n.statusCredito || "").toUpperCase();
       if (s === "LIQUIDADO") return { text: "Liquidado", dot: "sGreen", clickable: false };
       if (s === "VENCIDO") return { text: "Vencido", dot: "sRed", clickable: false };
+      if (s === "COBRABLE_HOY") return { text: "Cobrable hoy", dot: "sGold", clickable: false };
       if (s === "POR_VENCER") return { text: "Por vencer", dot: "sGold", clickable: false };
       if (s === "EN_PLAZO") return { text: "En plazo", dot: "sGreen", clickable: false };
       if (s === "PENDIENTE_LIQUIDACION_ORIGEN") {
@@ -1362,8 +1387,11 @@
 
       vencidoBox.classList.remove("show");
 
+      // Notas de pedido arriba, bonificación/reposición después (Netie 2026-09-01)
+      const tipoRank = n => (n.tipo === "pedido" || !n.tipo) ? 0 : 1;
+
       if (!q) {
-        render(current);
+        render(current.slice().sort((a, b) => tipoRank(a) - tipoRank(b)));
         return;
       }
 
@@ -1374,8 +1402,12 @@
         return a.includes(q) || b.includes(q) || c.includes(q);
       });
 
-      // Ordenar: Deudas vigentes primero, Liquidadas al final
+      // Ordenar: pedidos arriba de bonif/repo, luego deudas vigentes antes que liquidadas
       filtered.sort((a, b) => {
+        const rta = tipoRank(a);
+        const rtb = tipoRank(b);
+        if (rta !== rtb) return rta - rtb;
+
         const statA = (a.statusCredito || "").toUpperCase();
         const statB = (b.statusCredito || "").toUpperCase();
 
@@ -1419,6 +1451,12 @@
           : "Sin notas pendientes de liquidar";
         const wAbierta = Math.max(0, Math.min(100, Math.round(pctAbierta * 100)));
         kpiBarAbierta.style.width = wAbierta + "%";
+
+        // Monto real de lo que ya debería estar cobrado y no está (Netie
+        // 2026-08-02) — separado de la cartera abierta de arriba, que mezcla
+        // saldo todavía en plazo con saldo vencido de verdad.
+        kpiDebidoUrgente.textContent = money(j.montoDebidoUrgente || 0);
+        kpiCarteraVieja.textContent = money(j.montoCarteraVieja || 0);
 
         kpiCobrado.textContent = money(j.totalCobrado || 0);
         kpiPorCobrar.textContent = money(j.totalSaldo || 0);
@@ -1623,6 +1661,7 @@
     const tipoFix = document.getElementById("tipoFix");
     const justificacionFix = document.getElementById("justificacionFix");
     const origenFix = document.getElementById("origenFix");
+    const hintPrecioFix = document.getElementById("hintPrecioFix");
     const cancelTipoFix = document.getElementById("cancelTipoFix");
     const saveTipoFix = document.getElementById("saveTipoFix");
     const origenPickerFix = createOrigenPicker(origenFix, document.getElementById("origenDatalist"));
@@ -1632,6 +1671,8 @@
       const show = tipoFix.value !== "pedido";
       justificacionFix.style.display = show ? "" : "none";
       origenFix.style.display = show ? "" : "none";
+      hintPrecioFix.style.display = show ? "" : "none";
+      hintPrecioFix.textContent = HINT_PRECIO[tipoFix.value] || "";
       if (show) origenPickerFix.populate();
     }
     tipoFix.addEventListener("change", toggleTipoFixFields);
