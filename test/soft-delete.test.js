@@ -18,6 +18,12 @@ async function crearNota(app, overrides = {}) {
   return res.body.nota;
 }
 
+// Borrado con razón (2026-09-28): DELETE exige quién + por qué.
+const BORRADO_OK = { quien: "Mar", razon: "La clienta canceló el pedido" };
+function borrar(app, id, body = BORRADO_OK) {
+  return request(app).delete(`/api/notas/${id}`).send(body);
+}
+
 test("DELETE /api/notas/:id no borra el PDF físico", async () => {
   const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
   try {
@@ -25,7 +31,7 @@ test("DELETE /api/notas/:id no borra el PDF físico", async () => {
     const filePath = path.join(process.env.UPLOADS_DIR, nota.filename);
     assert.ok(fs.existsSync(filePath), "el PDF debe existir antes de borrar");
 
-    const res = await request(app).delete(`/api/notas/${nota.id}`);
+    const res = await borrar(app, nota.id);
     assert.strictEqual(res.status, 200);
     assert.ok(fs.existsSync(filePath), "el PDF NO debe borrarse en soft-delete");
   } finally {
@@ -48,39 +54,188 @@ function escribirNotaDirecta(overrides = {}) {
   return nota;
 }
 
-test("DELETE /api/notas/:id marca deletedAt y, sin credenciales en la request, deletedBy queda 'unknown'", async () => {
+function leerNota(id) {
+  const notas = JSON.parse(fs.readFileSync(path.join(process.env.DATA_DIR, "notas.json"), "utf8"));
+  return notas.find((n) => n.id === id);
+}
+
+// Origen 2026-09-28: cadena anti-robo de Netie. Tres borrados en el tablero de
+// Netie quedaron con deletedBy="unknown" y sin razón. Desde ahora DELETE exige
+// "quien" (lista fija por tablero) y "razon" (10-300 caracteres). Sin eso: 400
+// y la nota NO se borra.
+test("DELETE sin quién ni razón → 400 y la nota sigue activa", async () => {
   const { app, tmpDir } = setupTestServer({ pdfText: "" });
   try {
     const nota = escribirNotaDirecta();
-    await request(app).delete(`/api/notas/${nota.id}`);
+    const res = await request(app).delete(`/api/notas/${nota.id}`);
 
-    const dataRaw = fs.readFileSync(path.join(process.env.DATA_DIR, "notas.json"), "utf8");
-    const notas = JSON.parse(dataRaw);
-    const borrada = notas.find((n) => n.id === nota.id);
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual(res.body.ok, false);
+    assert.match(res.body.message, /quién/i);
+    assert.strictEqual(leerNota(nota.id).deletedAt, undefined, "la nota NO debe borrarse");
 
-    assert.ok(borrada, "la nota debe seguir existiendo en notas.json");
-    assert.ok(borrada.deletedAt, "deletedAt debe estar seteado");
-    assert.strictEqual(borrada.deletedBy, "unknown");
+    const list = await request(app).get("/api/notas");
+    assert.ok(list.body.notas.some((n) => n.id === nota.id), "debe seguir en /api/notas");
   } finally {
     cleanupTestServer(tmpDir);
   }
 });
 
-// Origen 2026-07-17: conciliación detectó notas borradas en mars con
-// deletedBy="unknown" — sin auth no había forma de saber quién borró qué.
-// Cada instancia corre con su propio ADMIN_USER en Render, así que el usuario
-// autenticado por Basic Auth SÍ identifica quién hizo la request.
-test("DELETE /api/notas/:id usa el usuario de Basic Auth como deletedBy cuando la request lo trae", async () => {
+test("DELETE con quién válido pero sin razón → 400 y la nota sigue activa", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    const res = await borrar(app, nota.id, { quien: "Mar" });
+
+    assert.strictEqual(res.status, 400);
+    assert.match(res.body.message, /por qué/i);
+    assert.strictEqual(leerNota(nota.id).deletedAt, undefined);
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("DELETE con razón de menos de 10 caracteres (tras recortar espacios) → 400", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    const res = await borrar(app, nota.id, { quien: "Mar", razon: "   error   " });
+
+    assert.strictEqual(res.status, 400);
+    assert.match(res.body.message, /10 caracteres/);
+    assert.strictEqual(leerNota(nota.id).deletedAt, undefined);
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("DELETE con razón de más de 300 caracteres → 400", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    const res = await borrar(app, nota.id, { quien: "Mar", razon: "x".repeat(301) });
+
+    assert.strictEqual(res.status, 400);
+    assert.match(res.body.message, /300 caracteres/);
+    assert.strictEqual(leerNota(nota.id).deletedAt, undefined);
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("DELETE con quién fuera de la lista del tablero → 400 y la nota sigue activa", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    const res = await borrar(app, nota.id, { quien: "Pedro", razon: "La clienta canceló el pedido" });
+
+    assert.strictEqual(res.status, 400);
+    assert.match(res.body.message, /Mar, Netie/);
+    assert.strictEqual(leerNota(nota.id).deletedAt, undefined);
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("DELETE con quién + razón válidos → soft-delete con deletedBy, deleteReason (recortada) y deleteMeta", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    const res = await borrar(app, nota.id, { quien: "Mar", razon: "  Nota duplicada, se subió dos veces  " })
+      .set("User-Agent", "PruebaNavegador/1.0");
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.ok, true);
+    const borrada = leerNota(nota.id);
+    assert.ok(borrada.deletedAt, "deletedAt debe estar seteado");
+    assert.strictEqual(borrada.deletedBy, "Mar");
+    assert.strictEqual(borrada.deleteReason, "Nota duplicada, se subió dos veces");
+    assert.ok(borrada.deleteMeta, "deleteMeta debe existir");
+    assert.strictEqual(borrada.deleteMeta.userAgent, "PruebaNavegador/1.0");
+    assert.ok("ip" in borrada.deleteMeta, "deleteMeta.ip debe registrarse");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("DELETE en el tablero de Mar acepta también a Netie como quién", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    const res = await borrar(app, nota.id, { quien: "Netie", razon: "Nota duplicada en el tablero" });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(leerNota(nota.id).deletedBy, "Netie");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+// Origen 2026-07-17: el usuario de Basic Auth se conserva como evidencia de
+// apoyo (deleteMeta.authUser), pero ya no sustituye al "quien" declarado.
+test("DELETE conserva el usuario de Basic Auth en deleteMeta.authUser; deletedBy es el quién declarado", async () => {
   const { app, tmpDir } = setupTestServer({ pdfText: "" });
   try {
     const nota = escribirNotaDirecta({ id: "nota-directa-2" });
-    await request(app).delete(`/api/notas/${nota.id}`).auth("mar", "loquesea");
+    await borrar(app, nota.id).auth("mar", "loquesea");
 
-    const dataRaw = fs.readFileSync(path.join(process.env.DATA_DIR, "notas.json"), "utf8");
-    const notas = JSON.parse(dataRaw);
-    const borrada = notas.find((n) => n.id === nota.id);
+    const borrada = leerNota(nota.id);
+    assert.strictEqual(borrada.deletedBy, "Mar");
+    assert.strictEqual(borrada.deleteMeta.authUser, "mar");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
 
-    assert.strictEqual(borrada.deletedBy, "mar");
+test("GET /api/notas/eliminadas devuelve deletedBy y deleteReason", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    await borrar(app, nota.id, { quien: "Mar", razon: "Se cambió por otra nota" });
+
+    const res = await request(app).get("/api/notas/eliminadas");
+    const borrada = res.body.notas.find((n) => n.id === nota.id);
+    assert.ok(borrada);
+    assert.strictEqual(borrada.deletedBy, "Mar");
+    assert.strictEqual(borrada.deleteReason, "Se cambió por otra nota");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("Notas borradas antes del cambio conservan deletedBy 'unknown' y un segundo DELETE no las reescribe", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const deletedAt = "2026-09-27T18:00:00.000Z";
+    const nota = escribirNotaDirecta({ deletedAt, deletedBy: "unknown" });
+
+    const res = await borrar(app, nota.id);
+    assert.strictEqual(res.status, 409);
+
+    const vieja = leerNota(nota.id);
+    assert.strictEqual(vieja.deletedAt, deletedAt);
+    assert.strictEqual(vieja.deletedBy, "unknown");
+    assert.strictEqual(vieja.deleteReason, undefined);
+
+    const trash = await request(app).get("/api/notas/eliminadas");
+    const enPapelera = trash.body.notas.find((n) => n.id === nota.id);
+    assert.strictEqual(enPapelera.deletedBy, "unknown");
+  } finally {
+    cleanupTestServer(tmpDir);
+  }
+});
+
+test("La auditoría de NOTA_ELIMINADA registra quién y por qué", async () => {
+  const { app, tmpDir } = setupTestServer({ pdfText: "" });
+  try {
+    const nota = escribirNotaDirecta();
+    await borrar(app, nota.id);
+
+    const auditPath = path.join(process.env.DATA_DIR, "business-audit.jsonl");
+    const lines = fs.readFileSync(auditPath, "utf8").trim().split("\n");
+    const last = JSON.parse(lines[lines.length - 1]);
+    assert.strictEqual(last.action, "NOTA_ELIMINADA");
+    assert.strictEqual(last.deletedBy, "Mar");
+    assert.strictEqual(last.deleteReason, "La clienta canceló el pedido");
   } finally {
     cleanupTestServer(tmpDir);
   }
@@ -90,7 +245,7 @@ test("GET /api/notas ya no incluye una nota borrada", async () => {
   const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
   try {
     const nota = await crearNota(app);
-    await request(app).delete(`/api/notas/${nota.id}`);
+    await borrar(app, nota.id);
 
     const res = await request(app).get("/api/notas");
     assert.strictEqual(res.status, 200);
@@ -104,7 +259,7 @@ test("GET /api/notas/eliminadas sí incluye la nota borrada con snapshot complet
   const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
   try {
     const nota = await crearNota(app);
-    await request(app).delete(`/api/notas/${nota.id}`);
+    await borrar(app, nota.id);
 
     const res = await request(app).get("/api/notas/eliminadas");
     assert.strictEqual(res.status, 200);
@@ -122,7 +277,7 @@ test("DELETE escribe una línea en business-audit.jsonl", async () => {
   const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
   try {
     const nota = await crearNota(app);
-    await request(app).delete(`/api/notas/${nota.id}`);
+    await borrar(app, nota.id);
 
     const auditPath = path.join(process.env.DATA_DIR, "business-audit.jsonl");
     assert.ok(fs.existsSync(auditPath), "business-audit.jsonl debe crearse");
@@ -139,7 +294,7 @@ test("Subir mismo filename+batch DESPUÉS de borrar la nota crea una nota NUEVA 
   const { app, tmpDir } = setupTestServer({ pdfText: "CLIENTE: Ana Test\nTOTAL: 500.00" });
   try {
     const nota = await crearNota(app);
-    await request(app).delete(`/api/notas/${nota.id}`);
+    await borrar(app, nota.id);
 
     const res = await request(app)
       .post("/api/upload")

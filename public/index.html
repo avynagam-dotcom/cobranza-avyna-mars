@@ -562,6 +562,46 @@
       font-size: 16px;
     }
 
+    .modal select,
+    .modal textarea {
+      width: 100%;
+      padding: 12px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, .12);
+      background: #f7f8fb;
+      color: #141414;
+      outline: none;
+      font-size: 16px;
+      font-family: inherit;
+    }
+
+    .modal textarea {
+      min-height: 84px;
+      resize: vertical;
+      line-height: 1.35;
+    }
+
+    .modal .fieldHint {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    .modal .fieldErr {
+      color: var(--red);
+      font-size: 13px;
+      margin-top: 10px;
+      min-height: 1em;
+    }
+
+    .btnDanger:disabled {
+      opacity: .45;
+      cursor: not-allowed;
+    }
+
     .modal .row {
       display: flex;
       gap: 10px;
@@ -903,17 +943,30 @@
   </div>
 
   <!-- Modal: Eliminar -->
-  <div id="overlayDel" class="overlay" role="dialog" aria-modal="true">
+  <div id="overlayDel" class="overlay" role="dialog" aria-modal="true" aria-labelledby="delTitle">
     <div class="modal">
-      <h3 style="color:var(--red)">Eliminar Nota</h3>
+      <h3 id="delTitle" style="color:var(--red)">Eliminar Nota</h3>
       <div class="desc" id="delDesc"></div>
-      <div class="desc" style="margin-top:10px; font-weight:bold; color:var(--red)">
-        ⚠️ Se moverá a la papelera (el PDF se conserva) — queda registrado con fecha, hora y quién la borró para la conciliación semanal.
+      <div class="desc" style="margin-top:10px">
+        Se moverá a la papelera (el PDF se conserva). Queda registrado quién la borró, por qué y cuándo, para la conciliación semanal.
       </div>
+
+      <label for="delQuien">¿Quién la borra?</label>
+      <select id="delQuien">
+        <option value="">Elige quién</option>
+        <option value="Mar">Mar</option>
+        <option value="Netie">Netie</option>
+      </select>
+
+      <label for="delRazon">¿Por qué?</label>
+      <textarea id="delRazon" maxlength="300" placeholder="Ej. La clienta canceló / Nota duplicada / Se cambió por otra nota"></textarea>
+      <div class="fieldHint"><span>Mínimo 10 caracteres.</span><span id="delRazonCount">0/300</span></div>
+
+      <div class="fieldErr" id="delErr" role="alert"></div>
 
       <div class="row">
         <button id="cancelDel" class="btn2" type="button">Cancelar</button>
-        <button id="saveDel" class="btnDanger" type="button">Mover a papelera</button>
+        <button id="saveDel" class="btnDanger" type="button" disabled>Mover a papelera</button>
       </div>
     </div>
   </div>
@@ -1722,19 +1775,44 @@
       }
     });
 
-    // Eliminar modal
+    // Eliminar modal — exige quién + por qué (el servidor valida lo mismo:
+    // quién de la lista fija del tablero, razón de 10 a 300 caracteres).
     const overlayDel = document.getElementById("overlayDel");
     const delDesc = document.getElementById("delDesc");
+    const delQuien = document.getElementById("delQuien");
+    const delRazon = document.getElementById("delRazon");
+    const delRazonCount = document.getElementById("delRazonCount");
+    const delErr = document.getElementById("delErr");
     const cancelDel = document.getElementById("cancelDel");
     const saveDel = document.getElementById("saveDel");
+    const RAZON_MIN = 10, RAZON_MAX = 300;
     let deletingId = null;
+    let deletingBusy = false;
+
+    function delValido() {
+      const razon = (delRazon.value || "").trim();
+      return !!delQuien.value && razon.length >= RAZON_MIN && razon.length <= RAZON_MAX;
+    }
+    function refreshDelState() {
+      const len = (delRazon.value || "").trim().length;
+      delRazonCount.textContent = `${len}/${RAZON_MAX}`;
+      saveDel.disabled = deletingBusy || !delValido();
+    }
+    delQuien.addEventListener("change", () => { delErr.textContent = ""; refreshDelState(); });
+    delRazon.addEventListener("input", () => { delErr.textContent = ""; refreshDelState(); });
 
     function openDel(id) {
       deletingId = id;
       const n = (window.__allNotas || []).find(x => String(x.id) === String(id));
       const label = n ? (n.cliente || n.originalName || "") : "";
-      delDesc.innerHTML = `Identificaste un error en la nota de: <b>${escapeHtml(label)}</b>?`;
+      delDesc.innerHTML = `Nota de: <b>${escapeHtml(label)}</b>`;
+      delQuien.selectedIndex = 0;
+      delRazon.value = "";
+      delErr.textContent = "";
+      deletingBusy = false;
+      refreshDelState();
       overlayDel.classList.add("show");
+      (delQuien.value ? delRazon : delQuien).focus();
     }
     function closeDel() {
       overlayDel.classList.remove("show");
@@ -1744,22 +1822,35 @@
     overlayDel.addEventListener("click", (e) => { if (e.target === overlayDel) closeDel(); });
 
     saveDel.addEventListener("click", async () => {
-      if (!deletingId) return;
-
-      try {
-        const r = await fetch(`/api/notas/${deletingId}`, { method: "DELETE" });
-        const j = await r.json();
-        if (j.ok) {
-          setMsg("ok", "Nota eliminada correctamente.");
-        } else {
-          setMsg("err", j.message || "Error al eliminar");
-        }
-      } catch (e) {
-        setMsg("err", "Error de conexión al eliminar");
+      if (!deletingId || deletingBusy) return;
+      if (!delValido()) {
+        delErr.textContent = "Elige quién la borra y escribe por qué (mínimo 10 caracteres).";
+        return;
       }
 
-      closeDel();
-      await refreshList();
+      deletingBusy = true;
+      refreshDelState();
+      try {
+        const r = await fetch(`/api/notas/${deletingId}`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quien: delQuien.value, razon: delRazon.value.trim() })
+        });
+        const j = await r.json().catch(() => null);
+        if (r.ok && j && j.ok) {
+          setMsg("ok", "Nota movida a la papelera.");
+          closeDel();
+          await refreshList();
+        } else {
+          // El modal se queda abierto con lo escrito, para corregir sin reescribir.
+          delErr.textContent = (j && j.message) ? j.message : `Error del servidor (${r.status})`;
+        }
+      } catch (e) {
+        delErr.textContent = "Error de conexión al eliminar. Intenta de nuevo.";
+      } finally {
+        deletingBusy = false;
+        refreshDelState();
+      }
     });
 
     // Pendientes / Batch

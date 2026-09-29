@@ -1,5 +1,21 @@
 # project_state.md — cobranza-avyna-mars
-> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-07-12 (fix: gasto en bonificaciones usaba el valor de la nota en vez del costo real)
+> Creado: 2026-05-01 (paridad con backend) | Última actualización: 2026-09-28 (borrar una nota exige quién + por qué)
+
+---
+
+## Sesión 2026-09-28 — Borrar una nota exige quién la borra y por qué (cadena anti-robo)
+
+**Por qué:** toda nota emitida por la marca debe estar en uno de los dos tableros, y borrarla debe dejar rastro de QUIÉN y POR QUÉ. Evidencia del 2026-09-28: tres borrados en el tablero de Netie con `deletedBy: "unknown"` y sin razón.
+
+**Cambio (TDD, rama local `feat/borrado-con-razon`, sin push ni deploy):**
+- `DELETE /api/notas/:id` exige body `{ quien, razon }`. `quien` ∈ lista fija de este tablero ("Mar", "Netie"); `razon` recortada, 10-300 caracteres. Si falta o es inválido → 400 con mensaje en español y NO se borra nada. Una nota ya borrada → 409 (no se reescribe su registro original).
+- Guarda `deletedBy=quien`, `deleteReason`, y `deleteMeta {ip, forwardedFor, userAgent, authUser}` como evidencia de apoyo. **Sin auth real por persona, "quien" es auto-declarado** — deleteMeta sirve para contrastarlo en la conciliación.
+- `/api/notas/eliminadas` devuelve `deleteReason`. Las notas borradas antes de este cambio conservan `deletedBy: "unknown"` (sin ediciones retroactivas). La línea `NOTA_ELIMINADA` de `business-audit.jsonl` incluye `deleteReason`.
+- UI: el modal "Eliminar Nota" ahora pide "¿Quién la borra?" (select) y "¿Por qué?" (textarea con contador, mínimo 10); el botón queda deshabilitado hasta que sea válido y el error del servidor se muestra dentro del modal sin perder lo escrito.
+
+Tests: 49/49 en verde (11 nuevas fallaban antes del cambio). Verificado en navegador real (Chrome DevTools, viewport celular) contra servidor local con datos de prueba. Réplica en `cobranza-avyna-backend`.
+
+**Para publicar (decisión de Netie):** push de la rama + merge a main → Render despliega solo.
 
 ---
 

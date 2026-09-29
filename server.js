@@ -766,6 +766,28 @@ app.post("/api/notas/:id/corregir-metodo-pago", (req, res) => {
   }
 });
 
+// Borrado con razón (2026-09-28, cadena anti-robo): borrar exige declarar QUIÉN
+// borra (lista fija de este tablero) y POR QUÉ. OJO: sin auth real por persona,
+// "quien" es AUTO-DECLARADO — nada impide que alguien escriba un nombre ajeno.
+// Por eso se guarda deleteMeta (ip, x-forwarded-for, userAgent, usuario de Basic
+// Auth) como evidencia de apoyo para contrastar en la conciliación.
+const QUIENES_PUEDEN_BORRAR = ["Mar", "Netie"];
+const RAZON_BORRADO_MIN = 10;
+const RAZON_BORRADO_MAX = 300;
+
+function validarBorrado(body) {
+  const quienRaw = typeof body?.quien === "string" ? body.quien.trim() : "";
+  const razon = typeof body?.razon === "string" ? body.razon.trim() : "";
+  const lista = QUIENES_PUEDEN_BORRAR.join(", ");
+  if (!quienRaw) return { error: `Indica quién la borra (${lista}).` };
+  const quien = QUIENES_PUEDEN_BORRAR.find((q) => q.toLowerCase() === quienRaw.toLowerCase());
+  if (!quien) return { error: `"${quienRaw}" no puede borrar notas en este tablero. Opciones: ${lista}.` };
+  if (!razon) return { error: "Escribe por qué se borra la nota." };
+  if (razon.length < RAZON_BORRADO_MIN) return { error: `La razón debe tener al menos ${RAZON_BORRADO_MIN} caracteres.` };
+  if (razon.length > RAZON_BORRADO_MAX) return { error: `La razón no puede pasar de ${RAZON_BORRADO_MAX} caracteres.` };
+  return { quien, razon };
+}
+
 app.delete("/api/notas/:id", (req, res) => {
   try {
     const { id } = req.params;
@@ -776,14 +798,29 @@ app.delete("/api/notas/:id", (req, res) => {
     if (idx === -1) return res.status(404).json({ ok: false, message: "Nota no encontrada" });
 
     const n = notas[idx];
+    // Una nota ya borrada no se vuelve a "borrar": reescribiría quién/por qué/cuándo
+    // del registro original (las borradas antes de este cambio se quedan "unknown").
+    if (n.deletedAt) return res.status(409).json({ ok: false, message: "Esta nota ya estaba eliminada." });
+
+    const v = validarBorrado(req.body);
+    if (v.error) return res.status(400).json({ ok: false, message: v.error });
+
     n.deletedAt = new Date().toISOString();
-    n.deletedBy = getAuthUser(req) || "unknown";
+    n.deletedBy = v.quien;
+    n.deleteReason = v.razon;
+    n.deleteMeta = {
+      ip: req.ip || req.socket?.remoteAddress || null,
+      forwardedFor: req.get("x-forwarded-for") || null,
+      userAgent: req.get("user-agent") || null,
+      authUser: getAuthUser(req),
+    };
     notas[idx] = n;
     saveDB(notas);
 
     appendBusinessAuditLog("NOTA_ELIMINADA", {
       notaSnapshot: n,
       deletedBy: n.deletedBy,
+      deleteReason: n.deleteReason,
     });
 
     return res.json({ ok: true, message: "Nota movida a papelera" });
