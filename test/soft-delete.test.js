@@ -197,6 +197,7 @@ test("GET /api/notas/eliminadas devuelve deletedBy y deleteReason", async () => 
     assert.ok(borrada);
     assert.strictEqual(borrada.deletedBy, "Mar");
     assert.strictEqual(borrada.deleteReason, "Se cambió por otra nota");
+    assert.strictEqual(borrada.deleteMeta, undefined, "la papelera pública no expone IP ni navegador de quien borró");
   } finally {
     cleanupTestServer(tmpDir);
   }

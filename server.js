@@ -423,7 +423,8 @@ app.get("/api/notas", (req, res) => {
 app.get("/api/notas/eliminadas", (req, res) => {
   const notas = loadDB().filter((n) => !!n.deletedAt);
   const now = new Date();
-  const notasWithCredito = notas.map((n) => ({ ...n, ...computeCredito(n, now) }));
+  // deleteMeta (IP, navegador) se queda en el servidor: esta ruta es pública
+  const notasWithCredito = notas.map(({ deleteMeta, ...n }) => ({ ...n, ...computeCredito(n, now) }));
   res.json({ ok: true, notas: notasWithCredito });
 });
 
