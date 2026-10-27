@@ -15,8 +15,11 @@ const { mock } = require("node:test");
  */
 let extractTextMock = null;
 
-function setupTestServer({ pdfText = "" } = {}) {
+function setupTestServer({ pdfText = "", auth = false } = {}) {
   process.env.NODE_ENV = "test";
+  // El login con Face ID se apaga en las pruebas de negocio; auth.test.js y
+  // auth-integration.test.js lo prueban aparte (auth: true lo deja encendido).
+  process.env.AUTH_DISABLED = auth ? "0" : "1";
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "cobranza-mars-test-"));
   process.env.DATA_DIR = path.join(tmpDir, "data");
   fs.mkdirSync(process.env.DATA_DIR, { recursive: true });

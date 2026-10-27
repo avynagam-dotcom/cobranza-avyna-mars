@@ -29,6 +29,7 @@ if (ADMIN_USER && ADMIN_PASS) {
 // instancia — mars/backend/cha/operado — corre con su propio ADMIN_USER en
 // Render, así que esto SÍ distingue quién borra qué). Sin header, "unknown".
 function getAuthUser(req) {
+  if (req.authUser) return req.authUser; // sesión con Face ID: correo de la persona
   const auth = req.headers.authorization || '';
   if (!auth.startsWith('Basic ')) return null;
   try {
@@ -68,6 +69,19 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 // Re-injectar al env para consistencia en imports
 process.env.DATA_DIR = DATA_DIR;
 process.env.UPLOADS_DIR = UPLOADS_DIR;
+
+// ----- Login con Face ID (passkeys). Debe ir ANTES de cualquier ruta o static.
+// Lista de personas permitidas en auth-allow.json. AUTH_DISABLED=1 lo apaga
+// (solo emergencia / pruebas).
+const { createAuth } = require("./auth");
+app.use(
+  createAuth({
+    dataDir: DATA_DIR,
+    allow: require("./auth-allow.json").allow,
+    rpName: "Avyna Cobranza Mars",
+    disabled: process.env.AUTH_DISABLED === "1",
+  }).middleware
+);
 
 // Importar persistencia DESPUÉS de definir rutas
 const { saveData, appendBusinessAuditLog } = require("./utils/persistence");
