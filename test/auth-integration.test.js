@@ -30,6 +30,6 @@ test("server.js con login encendido: nada se lee ni se escribe sin sesión", asy
 
   const root = await request(app).get("/");
   assert.equal(root.status, 200);
-  assert.match(root.text, /Face ID/);
+  assert.match(root.text, /código/);
   assert.ok(!root.text.includes("api/notas"), "la pantalla de login no debe traer el tablero");
 });
